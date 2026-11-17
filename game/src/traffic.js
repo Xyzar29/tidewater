@@ -1,223 +1,132 @@
-// traffic.js — Port Serena's civilian traffic. Moving cars pick their way
-// across the street lattice node by node, keeping to the right-hand lane,
-// braking for the car in front and pausing at junctions; parked cars line
-// the kerbs. Every one of them can be stolen.
+// traffic.js — Port Serena's drivers: lane-following cars on the street grid
+// that brake for the car ahead, pause at junctions, and stream in around the
+// player — plus the parked cars lining the kerbs. Every one can be stolen.
+import { STREETS, CFG } from './config.js';
+import { createCar, driveCar } from './vehicles.js';
+import { randRange, pick } from './random.js';
 
-import { PITCH, GRID, ROAD_W, CAR_COLORS } from './config.js';
-import { createCar, placeCar, stepCar } from './vehicles.js';
+const TYPES = ['sedan', 'hatch', 'van', 'sports'];
+const COLORS = [0xd8574a, 0x4a90d8, 0xf2c14e, 0x7fc46a, 0xe8e4da, 0x8a7fd6, 0xef8fb5, 0x5fc4b5, 0xd97b3f, 0x9fb4c7];
+const DIRS = [{ x: 1, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 1 }, { x: 0, z: -1 }];
+const CRUISE = 11.5;
 
-const LINES = [];
-for (let k = -GRID; k <= GRID; k++) LINES.push(k * PITCH);
-const LANE = 3.4;
+export function createTraffic(g) {
+  const rng = g.rng;
+  const drivers = [];
 
-export class Traffic {
-  constructor(scene, rng, colliders) {
-    this.scene = scene;
-    this.rng = rng;
-    this.colliders = colliders;
-    this.cars = [];        // everything with wheels that isn't police
-    this.drivers = [];     // moving cars with their route state
-
-    for (let i = 0; i < 24; i++) this.spawnDriver();
-    for (let i = 0; i < 24; i++) this.spawnParked();
+  function placeOnLeg(car, ax, az, dir, along) {
+    const rx = -dir.z, rz = dir.x; // right-hand lane offset
+    car.mesh.position.set(ax + dir.x * along + rx * 3.4, 0, az + dir.z * along + rz * 3.4);
+    car.heading = Math.atan2(dir.x, dir.z);
+    car.mesh.rotation.y = car.heading;
+    return { ax, az, dir };
   }
 
-  randomNode() {
-    return { a: this.rng.int(0, LINES.length - 1), b: this.rng.int(0, LINES.length - 1) };
-  }
-
-  // A fresh civilian car somewhere on the grid, aimed at a neighbour node.
-  spawnDriver(nearPos) {
-    let node = this.randomNode();
+  function spawnDriver(car, nearPos) {
+    let ax, az;
     if (nearPos) {
-      // Respawn away from the player so pop-in is never visible.
-      for (let tries = 0; tries < 12; tries++) {
-        const cand = this.randomNode();
-        const dx = LINES[cand.a] - nearPos.x, dz = LINES[cand.b] - nearPos.z;
-        if (dx * dx + dz * dz > 130 * 130) { node = cand; break; }
-      }
-    }
-    const dirs = [];
-    if (node.a > 0) dirs.push([-1, 0]);
-    if (node.a < LINES.length - 1) dirs.push([1, 0]);
-    if (node.b > 0) dirs.push([0, -1]);
-    if (node.b < LINES.length - 1) dirs.push([0, 1]);
-    const dir = this.rng.pick(dirs);
-    const kind = this.rng.pick(['sedan', 'sedan', 'hatch', 'hatch', 'van', 'sport']);
-    const car = createCar(kind, this.rng.pick(CAR_COLORS));
-    const fx = LINES[node.a], fz = LINES[node.b];
-    const right = { x: -dir[1], z: dir[0] };
-    const startT = this.rng.range(0.15, 0.7);
-    const x = fx + dir[0] * PITCH * startT + right.x * LANE;
-    const z = fz + dir[1] * PITCH * startT + right.z * LANE;
-    placeCar(car, x, z, Math.atan2(dir[0], dir[1]));
-    car.occupied = true;
-    car.driver = {
-      from: node,
-      to: { a: node.a + dir[0], b: node.b + dir[1] },
-      dir,
-      pause: 0,
-      cruise: this.rng.range(7.5, 11),
-    };
-    this.scene.add(car.mesh);
-    this.cars.push(car);
-    this.drivers.push(car);
-    return car;
-  }
-
-  spawnParked() {
-    // Kerbside spots: along a street, between two intersections.
-    const vertical = this.rng.chance(0.5);
-    const line = this.rng.pick(LINES);
-    const seg = this.rng.int(-GRID, GRID - 1);
-    const t = this.rng.range(0.2, 0.8);
-    const side = this.rng.chance(0.5) ? 1 : -1;
-    const off = (ROAD_W / 2 + 2.7) * side;
-    let x, z, heading;
-    if (vertical) {
-      x = line + off;
-      z = seg * PITCH + PITCH * t;
-      heading = side > 0 ? Math.PI : 0; // nose along the street, kerb side
+      ax = STREETS.reduce((a, b) => Math.abs(b - nearPos.x) < Math.abs(a - nearPos.x) ? b : a);
+      az = STREETS.reduce((a, b) => Math.abs(b - nearPos.z) < Math.abs(a - nearPos.z) ? b : a);
+      ax += (rng() < 0.5 ? -60 : 60); az += (rng() < 0.5 ? -60 : 60);
+      ax = Math.max(-180, Math.min(180, ax)); az = Math.max(-180, Math.min(180, az));
     } else {
-      x = seg * PITCH + PITCH * t;
-      z = line + off;
-      heading = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+      ax = pick(rng, STREETS); az = pick(rng, STREETS);
     }
-    const kind = this.rng.pick(['sedan', 'hatch', 'hatch', 'van', 'sport']);
-    const car = createCar(kind, this.rng.pick(CAR_COLORS));
-    placeCar(car, x, z, heading + this.rng.range(-0.04, 0.04));
-    car.parked = true;
-    this.scene.add(car.mesh);
-    this.cars.push(car);
-    return car;
+    const dir = pick(rng, DIRS);
+    const leg = placeOnLeg(car, ax, az, dir, randRange(rng, 2, 34));
+    return { car, leg, pauseT: 0 };
   }
 
-  // The yellow sports car mission 2 revolves around — parked at the hotel.
-  spawnSpecialSportscar(x, z, heading) {
-    const car = createCar('sport', 0xffd21f);
-    placeCar(car, x, z, heading);
-    car.parked = true;
-    car.special = 'sportscar';
-    this.scene.add(car.mesh);
-    this.cars.push(car);
-    return car;
+  for (let i = 0; i < CFG.trafficCount; i++) {
+    const car = createCar(pick(rng, TYPES), pick(rng, COLORS));
+    car.driver = 'traffic';
+    g.scene.add(car.mesh); g.cars.push(car);
+    drivers.push(spawnDriver(car, null));
   }
-
-  // The armoured cash van mission 6 robs — parked outside the casino.
-  spawnCashVan(x, z, heading) {
-    const car = createCar('truck', 0x707880);
-    placeCar(car, x, z, heading);
-    car.parked = true;
-    car.special = 'cashvan';
-    this.scene.add(car.mesh);
-    this.cars.push(car);
-    return car;
-  }
-
-  removeCar(car) {
-    this.scene.remove(car.mesh);
-    this.cars = this.cars.filter((c) => c !== car);
-    this.drivers = this.drivers.filter((c) => c !== car);
-  }
-
-  update(dt, playerPos, extraCars) {
-    const all = extraCars ? this.cars.concat(extraCars) : this.cars;
-    for (const car of this.drivers) {
-      if (car.playerDriven) continue; // the player has this one, for now
-      const d = car.driver;
-      const pos = car.mesh.position;
-
-      // Recycle cars that have wandered far from the action.
-      const pdx = pos.x - playerPos.x, pdz = pos.z - playerPos.z;
-      if (pdx * pdx + pdz * pdz > 320 * 320) {
-        const fresh = this.spawnDriver(playerPos);
-        this.removeCar(car);
-        void fresh;
-        continue;
+  // parked cars along the kerbs
+  for (let i = 0; i < CFG.parkedCount; i++) {
+    const car = createCar(pick(rng, TYPES), pick(rng, COLORS));
+    car.driver = 'parked';
+    const vertical = rng() < 0.5, c = pick(rng, STREETS), side = rng() < 0.5 ? -5.6 : 5.6;
+    let ok = false;
+    for (let tries = 0; tries < 6 && !ok; tries++) {
+      const along = randRange(rng, -200, 200);
+      const x = vertical ? c + side : along;
+      const z = vertical ? along : c + side;
+      ok = g.cars.every(o => Math.hypot(o.mesh.position.x - x, o.mesh.position.z - z) > 6);
+      if (ok) {
+        car.mesh.position.set(x, 0, z);
+        car.heading = vertical ? (side > 0 ? 0 : Math.PI) : (side > 0 ? -Math.PI / 2 : Math.PI / 2);
+        car.mesh.rotation.y = car.heading;
       }
-
-      // Target: the far node's centre, shifted into our lane.
-      const tx = LINES[d.to.a] + (-d.dir[1]) * LANE;
-      const tz = LINES[d.to.b] + (d.dir[0]) * LANE;
-      const dx = tx - pos.x, dz = tz - pos.z;
-      const dist = Math.hypot(dx, dz);
-
-      if (dist < 4.5) {
-        // Arrived: choose the next leg (straight if possible, else a turn).
-        const options = [];
-        const straight = { a: d.to.a + d.dir[0], b: d.to.b + d.dir[1] };
-        if (straight.a >= 0 && straight.a < LINES.length && straight.b >= 0 && straight.b < LINES.length) {
-          options.push({ dir: d.dir, node: straight, w: 5 });
-        }
-        const left = { a: d.to.a + d.dir[1], b: d.to.b - d.dir[0] };
-        const right = { a: d.to.a - d.dir[1], b: d.to.b + d.dir[0] };
-        for (const cand of [left, right]) {
-          if (cand.a >= 0 && cand.a < LINES.length && cand.b >= 0 && cand.b < LINES.length) {
-            options.push({ dir: [cand.a - d.to.a, cand.b - d.to.b], node: cand, w: 2 });
-          }
-        }
-        if (options.length === 0) {
-          // Dead end of the grid: U-turn.
-          const back = { a: d.from.a, b: d.from.b };
-          d.dir = [-d.dir[0], -d.dir[1]];
-          d.from = d.to;
-          d.to = back;
-        } else {
-          let total = 0;
-          for (const o of options) total += o.w;
-          let roll = this.rng.next() * total;
-          let chosen = options[0];
-          for (const o of options) { roll -= o.w; if (roll <= 0) { chosen = o; break; } }
-          d.from = d.to;
-          d.to = chosen.node;
-          d.dir = chosen.dir;
-          if (this.rng.chance(0.16)) d.pause = this.rng.range(0.4, 1.1);
-        }
-        continue;
-      }
-
-      // Steering: pure pursuit of the lane target.
-      const desired = Math.atan2(dx, dz);
-      let diff = desired - car.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      const steer = Math.max(-1, Math.min(1, diff * 2.2));
-
-      // Throttle: cruise, but brake for anything slow in front.
-      let throttle = car.speed < d.cruise ? 0.65 : 0;
-      const fx = Math.sin(car.heading), fz = Math.cos(car.heading);
-      for (const other of all) {
-        if (other === car) continue;
-        const ox = other.mesh.position.x - pos.x;
-        const oz = other.mesh.position.z - pos.z;
-        const ahead = ox * fx + oz * fz;
-        if (ahead > 0 && ahead < 12) {
-          const side = Math.abs(ox * fz - oz * fx);
-          if (side < 2.4) {
-            throttle = ahead < 6 ? -0.7 : 0;
-            break;
-          }
-        }
-      }
-      if (d.pause > 0) {
-        d.pause -= dt;
-        throttle = car.speed > 0.3 ? -0.8 : 0;
-      }
-      // Sirens clear the road: a cruiser close behind makes drivers hurry
-      // out of the way instead of dawdling in a jam.
-      if (extraCars) {
-        for (const cop of extraCars) {
-          const ox = pos.x - cop.mesh.position.x;
-          const oz = pos.z - cop.mesh.position.z;
-          const behind = ox * fx + oz * fz;
-          if (behind > 0 && behind < 12 && Math.abs(ox * fz - oz * fx) < 3) {
-            throttle = Math.max(throttle, 0.85);
-            break;
-          }
-        }
-      }
-
-      stepCar(car, dt, { throttle, steer, brake: false }, this.colliders, all);
     }
+    if (ok) { g.scene.add(car.mesh); g.cars.push(car); }
   }
+
+  function obstacleAhead(car, f) {
+    const p = car.mesh.position;
+    const rx = -f.z, rz = f.x;
+    for (const o of g.cars) {
+      if (o === car) continue;
+      const dx = o.mesh.position.x - p.x, dz = o.mesh.position.z - p.z;
+      const ahead = dx * f.x + dz * f.z, lat = dx * rx + dz * rz;
+      if (ahead > 0 && ahead < 8.5 && Math.abs(lat) < 2.1) return true;
+    }
+    for (const ped of g.peds.peds) {
+      if (ped.mode === 'down') continue;
+      const dx = ped.mesh.position.x - p.x, dz = ped.mesh.position.z - p.z;
+      const ahead = dx * f.x + dz * f.z, lat = dx * rx + dz * rz;
+      if (ahead > 0 && ahead < 6.5 && Math.abs(lat) < 1.7) return true;
+    }
+    return false;
+  }
+
+  return {
+    update(dt) {
+      const pp = g.player.pos();
+      for (const d of drivers) {
+        const car = d.car;
+        if (car.driver !== 'traffic') continue; // stolen or parked by the player
+        const p = car.mesh.position;
+        // stream the city around Mari
+        if (Math.hypot(p.x - pp.x, p.z - pp.z) > 205) {
+          const nd = spawnDriver(car, pp);
+          d.leg = nd.leg; d.pauseT = 0;
+          continue;
+        }
+        if (d.pauseT > 0) {
+          d.pauseT -= dt;
+          driveCar(car, dt, 0, 0, g, car.speed > 0.5);
+          continue;
+        }
+        const { dir } = d.leg;
+        const rx = -dir.z, rz = dir.x;
+        const progress = (p.x - d.leg.ax) * dir.x + (p.z - d.leg.az) * dir.z;
+        const aimX = d.leg.ax + dir.x * (progress + 11) + rx * 3.4;
+        const aimZ = d.leg.az + dir.z * (progress + 11) + rz * 3.4;
+        const desired = Math.atan2(aimX - p.x, aimZ - p.z);
+        let diff = desired - car.heading;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        const steer = Math.max(-1, Math.min(1, diff * 1.7));
+        const f = { x: Math.sin(car.heading), z: Math.cos(car.heading) };
+        let throttle = Math.abs(diff) > 1.1 ? 0.3 : 1;
+        if (car.speed > CRUISE) throttle = Math.min(throttle, 0);
+        if (obstacleAhead(car, f)) throttle = car.speed > 1 ? -0.7 : 0;
+        driveCar(car, dt, throttle, steer, g, false);
+        if (progress > 55) {
+          // choose the next leg at the junction: mostly straight, sometimes a turn
+          const bx = d.leg.ax + dir.x * 60, bz = d.leg.az + dir.z * 60;
+          const options = DIRS.filter(nd => {
+            const nx = bx + nd.x * 60, nz = bz + nd.z * 60;
+            return nx >= -181 && nx <= 181 && nz >= -181 && nz <= 181 && !(nd.x === -dir.x && nd.z === -dir.z);
+          });
+          const straight = options.find(nd => nd.x === dir.x && nd.z === dir.z);
+          const nd = (straight && rng() < 0.62) ? straight : pick(rng, options.length ? options : [dir]);
+          d.leg = { ax: bx, az: bz, dir: nd };
+          if (rng() < 0.16) d.pauseT = randRange(rng, 0.5, 1.1);
+        }
+      }
+    },
+  };
 }

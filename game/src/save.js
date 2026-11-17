@@ -1,37 +1,29 @@
-// save.js — the whole save system is one localStorage record: money, how
-// far the story has progressed, where Mari was standing and what she was
-// carrying. Continue on the title screen reads it back; New Game wipes it.
+// save.js — localStorage persistence: money, story progress, position.
+// Continue on the title screen picks up exactly where Mari left off.
+import { S } from './config.js';
 
 const KEY = 'tidewater-save-v1';
 
-export function saveGame(data) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(data));
-  } catch (err) {
-    // Private mode / quota — the game simply runs unsaved.
-  }
+export function hasSave() {
+  try { return !!localStorage.getItem(KEY); } catch (e) { return false; }
 }
 
-export function loadGame() {
+export function saveGame(g) {
+  try {
+    const p = g.player.pos();
+    localStorage.setItem(KEY, JSON.stringify({
+      money: S.money, missionIndex: S.missionIndex, x: p.x, z: p.z,
+    }));
+  } catch (e) { /* private mode etc. — saving is best-effort */ }
+}
+
+export function loadSave() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || typeof data.money !== 'number' || typeof data.mission !== 'number') return null;
-    return data;
-  } catch (err) {
-    return null;
-  }
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
 }
 
 export function clearSave() {
-  try {
-    localStorage.removeItem(KEY);
-  } catch (err) {
-    // Nothing to clear.
-  }
-}
-
-export function hasSave() {
-  return loadGame() !== null;
+  try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
 }

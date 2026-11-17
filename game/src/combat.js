@@ -1,263 +1,211 @@
-// combat.js — gunplay and fists. Shooting is hitscan along the camera ray
-// (level aim, exactly like the mouse look), drawn with a tracer line and a
-// muzzle flash. The rival crew in the warehouse fight strafes, keeps its
-// distance and returns fire with visible tracers of its own.
+// combat.js — fists and the pistol: draw/holster, hitscan shooting down the
+// camera ray with tracers and muzzle flash, magazines and reloads, melee, and
+// the rival crew who strafe, return fire and go down in three hits.
+import { S } from './config.js';
+import { makeFigure } from './player.js';
+import { collideCircle } from './city.js';
+import { pick } from './random.js';
 
-import { PISTOL_DAMAGE, ENEMY_HP, ENEMY_DAMAGE, MELEE_DAMAGE, MELEE_RANGE } from './config.js';
+export const CS = { drawn: false, mag: 12, reserve: 96, reloading: false, reloadDoneAt: 0 };
+const MAG = 12;
+const SKINS = [0xc98a64, 0x8a5a3b, 0xe8b48c, 0x6e4226];
+const HAIRS = [0x111111, 0x2a1a10, 0x4a2f1a];
 
-function makeGunman(rng) {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22, 0.28, 0.8, 7),
-    new THREE.MeshLambertMaterial({ color: rng.pick([0x2b3440, 0x40342b, 0x342b40]) }),
-  );
-  body.position.y = 0.86;
-  body.castShadow = true;
-  g.add(body);
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.21, 8, 7),
-    new THREE.MeshLambertMaterial({ color: rng.pick([0xf2c49b, 0xc68863, 0x8a5a3b]) }),
-  );
-  head.position.y = 1.5;
-  g.add(head);
-  const gun = new THREE.Mesh(
-    new THREE.BoxGeometry(0.09, 0.14, 0.44),
-    new THREE.MeshLambertMaterial({ color: 0x14161a }),
-  );
-  gun.position.set(0.24, 1.12, 0.3);
-  g.add(gun);
-  return g;
+// t at which the ray (o + dir*t, dir.xz raw) enters a 2D AABB, or Infinity.
+function segBox(ox, oz, dx, dz, b) {
+  let tmin = 0, tmax = Infinity;
+  if (Math.abs(dx) < 1e-9) { if (ox < b.x1 || ox > b.x2) return Infinity; }
+  else {
+    let t1 = (b.x1 - ox) / dx, t2 = (b.x2 - ox) / dx;
+    if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+    tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return Infinity;
+  }
+  if (Math.abs(dz) < 1e-9) { if (oz < b.z1 || oz > b.z2) return Infinity; }
+  else {
+    let t1 = (b.z1 - oz) / dz, t2 = (b.z2 - oz) / dz;
+    if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+    tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return Infinity;
+  }
+  return tmin > 0 ? tmin : Infinity;
 }
 
-function flashTexture() {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const g = c.getContext('2d');
-  const grad = g.createRadialGradient(32, 32, 2, 32, 32, 30);
-  grad.addColorStop(0, 'rgba(255,240,180,1)');
-  grad.addColorStop(0.4, 'rgba(255,180,60,0.85)');
-  grad.addColorStop(1, 'rgba(255,120,20,0)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 64, 64);
-  return new THREE.CanvasTexture(c);
-}
+export function createCombat(g) {
+  const rivals = [];
+  const tracers = [];
+  const flash = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.7),
+    new THREE.MeshBasicMaterial({ color: 0xffd76a, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+  flash.visible = false;
+  g.scene.add(flash);
+  const flashLight = new THREE.PointLight(0xffc36b, 0, 18);
+  g.scene.add(flashLight);
 
-export class Combat {
-  constructor(scene, rng, colliders) {
-    this.scene = scene;
-    this.rng = rng;
-    this.colliders = colliders;
-    this.enemies = [];
-    this.tracers = [];   // { line, ttl }
-    this.onEnemyDown = null;  // set by missions
-    this.onPlayerHit = null;  // set by main (HUD flash)
-    this.flashTex = flashTexture();
-    this.flash = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: this.flashTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    }));
-    this.flash.scale.set(0.6, 0.6, 1);
-    this.flash.visible = false;
-    this.scene.add(this.flash);
-    this.flashT = 0;
+  function addTracer(from, to, color, persist) {
+    const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+    g.scene.add(line);
+    if (!persist) tracers.push({ line, until: S.time + 0.09 });
+    return line;
+  }
+  function gunTip() {
+    const p = g.player.pos(), info = g.player.info(), h = info.heading;
+    return new THREE.Vector3(p.x + Math.sin(h) * 0.45, 1.25, p.z + Math.cos(h) * 0.45);
+  }
+  function killRival(r) {
+    r.alive = false;
+    r.mesh.rotation.x = -Math.PI / 2;
+    r.mesh.position.y = 0.35;
+  }
+  function startReload() {
+    if (CS.reloading || CS.reserve <= 0 || CS.mag >= MAG) return;
+    CS.reloading = true;
+    CS.reloadDoneAt = S.time + 1.35;
+    g.audioSfx('click');
   }
 
-  spawnCrew(x, z, count) {
-    this.clearCrew();
-    const spots = [
-      [0, 0], [7, -4], [-6, -5], [3, -10], [-3, 6], [9, 4],
-    ];
-    for (let i = 0; i < count; i++) {
-      const [ox, oz] = spots[i % spots.length];
-      const mesh = makeGunman(this.rng);
-      mesh.position.set(x + ox, 0, z + oz);
-      this.scene.add(mesh);
-      this.enemies.push({
-        mesh, hp: ENEMY_HP, alive: true,
-        shootCd: this.rng.range(0.7, 1.6),
-        strafeDir: this.rng.chance(0.5) ? 1 : -1,
-        strafeT: this.rng.range(1, 2.4),
-      });
-    }
-    return this.enemies;
-  }
-
-  clearCrew() {
-    for (const e of this.enemies) this.scene.remove(e.mesh);
-    this.enemies = [];
-  }
-
-  aliveCount() {
-    return this.enemies.filter((e) => e.alive).length;
-  }
-
-  // Is the straight line a→b (at chest height) free of buildings?
-  lineOfSight(a, b) {
-    const steps = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 2);
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      const x = a.x + (b.x - a.x) * t;
-      const z = a.z + (b.z - a.z) * t;
-      for (const c of this.colliders) {
-        if (x > c.x0 && x < c.x1 && z > c.z0 && z < c.z1) return false;
+  const api = {
+    CS, rivals,
+    setDrawn(v) {
+      CS.drawn = v; S.drawn = v;
+      g.player.mesh.userData.gun.visible = v;
+    },
+    toggleDraw() { api.setDrawn(!CS.drawn); g.audioSfx('click'); },
+    startReload,
+    tryShoot() {
+      if (!CS.drawn || S.inCar) return false;
+      if (CS.reloading) return true;
+      if (CS.mag <= 0) { g.audioSfx('empty'); startReload(); return true; }
+      CS.mag--;
+      g.audioSfx('gunshot');
+      const cam = g.camera;
+      const origin = cam.position.clone();
+      const dir = new THREE.Vector3();
+      cam.getWorldDirection(dir);
+      g.lastShot = { x: origin.x, z: origin.z, t: S.time };
+      if (S.time - S.lastShotCrime > 1.5) { S.lastShotCrime = S.time; g.reportCrime('shot'); }
+      let bestT = 70, hitKind = null, hitRef = null;
+      const test = (x, y, z, radius, kind, ref) => {
+        const vx = x - origin.x, vy = y - origin.y, vz = z - origin.z;
+        const t = vx * dir.x + vy * dir.y + vz * dir.z;
+        if (t < 0.5 || t > bestT) return;
+        const px = origin.x + dir.x * t, py = origin.y + dir.y * t, pz = origin.z + dir.z * t;
+        const d2 = (px - x) * (px - x) + (py - y) * (py - y) + (pz - z) * (pz - z);
+        if (d2 < radius * radius) { bestT = t; hitKind = kind; hitRef = ref; }
+      };
+      for (const r of rivals) if (r.alive) test(r.mesh.position.x, 1.15, r.mesh.position.z, 1.15, 'rival', r);
+      for (const p of g.peds.peds) if (p.mode !== 'down') test(p.mesh.position.x, 1.1, p.mesh.position.z, 1.0, 'ped', p);
+      for (const b of g.city.colliders) {
+        const t = segBox(origin.x, origin.z, dir.x, dir.z, b);
+        if (t < bestT) { bestT = t; hitKind = 'wall'; hitRef = null; }
       }
-    }
-    return true;
-  }
-
-  drawTracer(from, to, color = 0xffd76a) {
-    const geo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(from.x, from.y, from.z),
-      new THREE.Vector3(to.x, to.y, to.z),
-    ]);
-    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
-      color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
-    }));
-    this.scene.add(line);
-    this.tracers.push({ line, ttl: 0.07 });
-  }
-
-  showFlash(pos, ttl = 0.055) {
-    this.flash.position.copy(pos);
-    this.flash.visible = true;
-    this.flashT = ttl;
-  }
-
-  // Distance from ray origin along dir to a sphere; Infinity when it misses.
-  raySphere(origin, dir, center, r) {
-    const ox = center.x - origin.x, oy = center.y - origin.y, oz = center.z - origin.z;
-    const t = ox * dir.x + oy * dir.y + oz * dir.z;
-    if (t < 0) return Infinity;
-    const d2 = ox * ox + oy * oy + oz * oz - t * t;
-    if (d2 > r * r) return Infinity;
-    return t - Math.sqrt(r * r - d2);
-  }
-
-  // The player's shot: from the camera, through the crosshair.
-  playerShoot(camera, playerPos) {
-    const origin = camera.position.clone();
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    // The gun sits at Mari's shoulder, slightly below the camera.
-    const gunPos = new THREE.Vector3(playerPos.x, 1.35, playerPos.z)
-      .addScaledVector(dir, 0.5);
-    let bestT = 70;
-    let hitEnemy = null;
-    for (const e of this.enemies) {
-      if (!e.alive) continue;
-      const c = e.mesh.position;
-      const t = this.raySphere(origin, dir, { x: c.x, y: 1.05, z: c.z }, 0.62);
-      if (t < bestT) { bestT = t; hitEnemy = e; }
-    }
-    const end = origin.clone().addScaledVector(dir, bestT);
-    this.drawTracer(gunPos, end);
-    this.showFlash(gunPos);
-    if (hitEnemy) {
-      hitEnemy.hp -= PISTOL_DAMAGE;
-      if (hitEnemy.hp <= 0 && hitEnemy.alive) {
-        hitEnemy.alive = false;
-        hitEnemy.mesh.rotation.x = Math.PI / 2;
-        hitEnemy.mesh.position.y = 0.25;
-        if (this.onEnemyDown) this.onEnemyDown(hitEnemy);
+      const end = origin.clone().add(dir.clone().multiplyScalar(bestT));
+      const tip = gunTip();
+      addTracer(tip, end, 0xffe9a8, false);
+      flash.position.copy(tip).add(dir.clone().multiplyScalar(0.35));
+      flash.lookAt(end);
+      flash.material.opacity = 0.95; flash.visible = true;
+      flashLight.position.copy(tip); flashLight.intensity = 2.2;
+      if (hitKind === 'rival') {
+        hitRef.hp -= 34; hitRef.aggro = true;
+        if (hitRef.hp <= 0) killRival(hitRef);
+      } else if (hitKind === 'ped') {
+        g.peds.downPed(hitRef, true);
       }
-    }
-    return hitEnemy;
-  }
-
-  // Fists: nearest living enemy within reach and roughly in front.
-  melee(playerPos, heading) {
-    let hit = null;
-    for (const e of this.enemies) {
-      if (!e.alive) continue;
-      const c = e.mesh.position;
-      const dx = c.x - playerPos.x, dz = c.z - playerPos.z;
-      const d = Math.hypot(dx, dz);
-      if (d > MELEE_RANGE) continue;
-      const ang = Math.atan2(dx, dz);
-      let diff = Math.abs(ang - heading);
-      if (diff > Math.PI) diff = Math.PI * 2 - diff;
-      if (diff < 1.1) { hit = e; break; }
-    }
-    if (hit) {
-      hit.hp -= MELEE_DAMAGE;
-      // A shove with the punch.
-      const c = hit.mesh.position;
-      const dx = c.x - playerPos.x, dz = c.z - playerPos.z;
-      const d = Math.hypot(dx, dz) || 1;
-      c.x += (dx / d) * 0.9;
-      c.z += (dz / d) * 0.9;
-      if (hit.hp <= 0 && hit.alive) {
-        hit.alive = false;
-        hit.mesh.rotation.x = Math.PI / 2;
-        hit.mesh.position.y = 0.25;
-        if (this.onEnemyDown) this.onEnemyDown(hit);
+      if (CS.mag === 0) startReload();
+      return true;
+    },
+    tryMelee() {
+      if (CS.drawn || S.inCar) return false;
+      const p = g.player.pos(), info = g.player.info();
+      const fx = Math.sin(info.heading), fz = Math.cos(info.heading);
+      let acted = false;
+      for (const r of rivals) {
+        if (!r.alive) continue;
+        const dx = r.mesh.position.x - p.x, dz = r.mesh.position.z - p.z;
+        if (dx * dx + dz * dz < 5.8 && dx * fx + dz * fz > 0.3) {
+          r.hp -= 30; r.aggro = true;
+          if (r.hp <= 0) killRival(r);
+          acted = true;
+        }
       }
-    }
-    return hit;
-  }
-
-  enemyShoot(enemy, player, audio) {
-    const from = enemy.mesh.position.clone();
-    from.y = 1.25;
-    const to = player.pos.clone();
-    to.y = 1.1;
-    const dist = from.distanceTo(to);
-    // Spread grows with range; the tracer shows where the bullet went.
-    const spread = 0.6 + dist * 0.02;
-    to.x += this.rng.range(-spread, spread) * 0.4;
-    to.z += this.rng.range(-spread, spread) * 0.4;
-    this.drawTracer(from, to, 0xff9d5c);
-    this.showFlash(from.clone(), 0.045);
-    if (audio) audio.gunshot();
-    const hitChance = Math.max(0.14, 0.52 - dist * 0.008);
-    if (this.rng.chance(hitChance)) {
-      player.hp -= ENEMY_DAMAGE;
-      if (this.onPlayerHit) this.onPlayerHit();
-    }
-  }
-
-  update(dt, player, audio) {
-    // Tracers and flashes fade.
-    for (const t of [...this.tracers]) {
-      t.ttl -= dt;
-      if (t.ttl <= 0) {
-        this.scene.remove(t.line);
-        t.line.geometry.dispose();
-        this.tracers = this.tracers.filter((x) => x !== t);
+      if (!acted) for (const ped of g.peds.peds) {
+        if (ped.mode === 'down') continue;
+        const dx = ped.mesh.position.x - p.x, dz = ped.mesh.position.z - p.z;
+        if (dx * dx + dz * dz < 5.8 && dx * fx + dz * fz > 0.3) { g.peds.downPed(ped, true); acted = true; break; }
       }
-    }
-    if (this.flashT > 0) {
-      this.flashT -= dt;
-      if (this.flashT <= 0) this.flash.visible = false;
-    }
-
-    const ppos = player.pos;
-    for (const e of this.enemies) {
-      if (!e.alive) continue;
-      const pos = e.mesh.position;
-      const dx = ppos.x - pos.x, dz = ppos.z - pos.z;
-      const dist = Math.hypot(dx, dz);
-      e.mesh.rotation.y = Math.atan2(dx, dz);
-      if (dist > 46 || dist < 0.01) continue;
-      if (!this.lineOfSight(pos, ppos)) continue;
-
-      // Strafe sideways, holding a fighting distance of roughly 9–16 m.
-      e.strafeT -= dt;
-      if (e.strafeT <= 0) {
-        e.strafeDir *= -1;
-        e.strafeT = this.rng.range(1, 2.4);
+      if (acted) { g.audioSfx('punch'); g.reportCrime('punch'); }
+      return acted;
+    },
+    spawnSquad(positions) {
+      api.clearSquad();
+      for (const [x, z] of positions) {
+        const mesh = makeFigure({ shirt: 0x35383e, pants: 0x22242a, skin: pick(g.rng, SKINS), hair: pick(g.rng, HAIRS) });
+        mesh.position.set(x, 0.12, z);
+        mesh.userData.gun.visible = true;
+        g.scene.add(mesh);
+        rivals.push({ mesh, hp: 60, alive: true, anchor: { x, z }, phase: g.rng() * 6, shootT: 1.2 + g.rng() * 1.2, aggro: false });
       }
-      const ux = dx / dist, uz = dz / dist;
-      let mx = -uz * e.strafeDir, mz = ux * e.strafeDir;
-      if (dist > 17) { mx += ux * 0.8; mz += uz * 0.8; }
-      if (dist < 7) { mx -= ux * 0.7; mz -= uz * 0.7; }
-      pos.x += mx * 1.6 * dt;
-      pos.z += mz * 1.6 * dt;
-
-      e.shootCd -= dt;
-      if (e.shootCd <= 0) {
-        e.shootCd = this.rng.range(1.05, 1.8);
-        this.enemyShoot(e, player, audio);
+      return rivals;
+    },
+    clearSquad() {
+      for (const r of rivals) g.scene.remove(r.mesh);
+      rivals.length = 0;
+    },
+    aliveCount() { return rivals.reduce((n, r) => n + (r.alive ? 1 : 0), 0); },
+    stageTracer() {
+      const r = rivals.find(r => r.alive);
+      if (!r) return;
+      const tip = gunTip();
+      addTracer(tip, new THREE.Vector3(r.mesh.position.x, 1.2, r.mesh.position.z), 0xffe9a8, true);
+      flash.position.copy(tip);
+      flash.material.opacity = 0.9; flash.visible = true;
+    },
+    update(dt) {
+      if (CS.reloading && S.time >= CS.reloadDoneAt) {
+        const take = Math.min(MAG - CS.mag, CS.reserve);
+        CS.mag += take; CS.reserve -= take; CS.reloading = false;
       }
-    }
-  }
+      for (let i = tracers.length - 1; i >= 0; i--) {
+        if (S.time > tracers[i].until) {
+          g.scene.remove(tracers[i].line);
+          tracers[i].line.geometry.dispose();
+          tracers.splice(i, 1);
+        }
+      }
+      if (flash.visible && !S.shotMode) {
+        flash.material.opacity -= dt * 9;
+        flashLight.intensity = Math.max(0, flashLight.intensity - dt * 22);
+        if (flash.material.opacity <= 0) flash.visible = false;
+      }
+      const pp = g.player.pos();
+      for (const r of rivals) {
+        if (!r.alive) continue;
+        const m = r.mesh;
+        const dx = pp.x - m.position.x, dz = pp.z - m.position.z;
+        const dist = Math.hypot(dx, dz);
+        const active = r.aggro || (g.missions && g.missions.fightActive());
+        m.rotation.y = Math.atan2(dx, dz);
+        if (!active || dist > 46 || S.screen !== 'playing') continue;
+        r.phase += dt * 1.4;
+        let mx = Math.cos(r.phase) * 0.9, mz = Math.sin(r.phase) * 0.9;
+        if (dist > 15) { mx += (dx / dist) * 1.6; mz += (dz / dist) * 1.6; }
+        m.position.x += mx * dt * 1.3;
+        m.position.z += mz * dt * 1.3;
+        collideCircle(m.position, 0.5, g.city.colliders);
+        r.shootT -= dt;
+        if (r.shootT <= 0 && dist < 40) {
+          r.shootT = 1.15 + g.rng() * 0.95;
+          const from = new THREE.Vector3(m.position.x, 1.25, m.position.z);
+          const to = new THREE.Vector3(pp.x + (g.rng() - 0.5) * 1.6, 1.15, pp.z + (g.rng() - 0.5) * 1.6);
+          addTracer(from, to, 0xff9a7a, false);
+          g.audioSfx('gunshot');
+          g.lastShot = { x: m.position.x, z: m.position.z, t: S.time };
+          const chance = Math.max(0.14, 0.52 - dist * 0.007);
+          if (g.rng() < chance) g.damagePlayer(4 + g.rng() * 5);
+        }
+      }
+    },
+  };
+  return api;
 }

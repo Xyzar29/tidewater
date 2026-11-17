@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/gta6-01/Xyzar29/tidewater/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/Xyzar29/tidewater/reward.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**TIDEWATER** is an original 3D open-world crime game that runs entirely offline in a desktop browser. No build step, no downloads at runtime: three.js is vendored in the repo, every texture is painted on a canvas at boot, and every sound — engines, sirens, gunfire, the ambient synth loop — is synthesized live with WebAudio.
+**TIDEWATER** is an original 3D open-world crime game that plays entirely offline in a desktop browser. No build step and no runtime downloads: three.js is vendored in this repo, every texture is painted on a canvas at boot, and every sound — engines, sirens, gunshots, the ambient synth loop — is synthesized live with WebAudio.
 
 Welcome to **Port Serena**, a sun-drenched coastal city of pastel towers, palm-lined promenades, a working marina, dockside warehouses and quiet suburbs, all of it under a permanent golden-hour sun. You are **Marisol "Mari" Vega**, a courier with a talent for driving who starts taking jobs from fixer **Dario Fuentes**. The work pays well. It is also noticed — by **Detective Ruth Calloway** of the Port Serena PD, who has made Mari her personal project.
 
@@ -14,7 +14,7 @@ Welcome to **Port Serena**, a sun-drenched coastal city of pastel towers, palm-l
 - **Living traffic and pedestrians** — drivers hold their lane, brake for the car ahead, pause at junctions and stop for people crossing. Pedestrians stroll the sidewalks and scatter when things get loud. Every car in the city can be stolen and driven.
 - **A 0–5 star wanted system** — theft, hit-and-runs, ramming and gunfire all raise heat. Cruisers spawn out of sight, hunt with predicted intercepts and try to box you in; get caught standing next to one and the BUSTED meter fills. Break line of sight long enough and the heat bleeds away, star by star.
 - **Combat** — fists, and a pistol with magazines, reserves and reloads. The rival crew in the warehouse job strafes and returns fire with visible tracers. WASTED means a hospital bill; BUSTED means a fine and a trip to the precinct.
-- **A six-mission story** — a timed marina delivery, a stolen yellow sports car, cash bags on the docks, a checkpoint run against the clock, a warehouse shootout over a briefcase, and an armoured-van robbery that ends in a four-star escape to a waiting boat. Dialogue, timers, gold markers and cash rewards throughout, plus free roam (and findable cash stashes) in between.
+- **A six-mission story** — a timed marina delivery, a stolen yellow sports car, cash bags on the docks, a checkpoint run against the clock, a warehouse shootout over a briefcase, and an armoured-van robbery that ends in a four-star escape to a waiting boat. Dialogue, timers, gold markers and cash rewards throughout, plus free roam (and findable cash pickups) in between.
 - **HUD and radar at all times** — health, district, money, wanted stars, the current objective with distance and countdown, ammo, dialogue, and a live minimap with traffic dots, flashing police blips and the mission marker.
 - **A save that survives reloads** — money, story progress and position persist in localStorage. Continue on the title screen picks up right where you left off.
 

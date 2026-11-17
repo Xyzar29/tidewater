@@ -1,211 +1,160 @@
-// police.js — the Port Serena PD. Wanted runs 0–5 stars: crimes and
-// missions raise it, cruisers spawn out of sight and hunt with a predicted
-// intercept, and standing still next to one fills the BUSTED meter. Break
-// visual contact long enough and the stars bleed away one by one.
+// police.js — the PSPD: a 0–5 star wanted system fed by crimes, cruisers that
+// spawn out of sight and hunt with predicted intercepts, a BUSTED meter for
+// when Mari is caught standing still, and heat that bleeds away unseen.
+import { S, CFG, STREETS } from './config.js';
+import { createCar, driveCar } from './vehicles.js';
+import { pick } from './random.js';
 
-import { PITCH, GRID, MAX_STARS, POLICE_CAP, SIGHT_RANGE, LOSE_SIGHT_TIME, STAR_DECAY_TIME, BUST_TIME } from './config.js';
-import { createCar, placeCar, stepCar } from './vehicles.js';
+const CRIME_HEAT = { theft: 100, hitped: 200, shot: 55, ram: 70, punch: 40, rob: 400 };
 
-const LINES = [];
-for (let k = -GRID; k <= GRID; k++) LINES.push(k * PITCH);
+const RADIO_LINES = [
+  'All units, she is on the move. Box her in.',
+  'Calloway here. I want that car stopped, not scratched.',
+  'Suspect is making us look slow, people.',
+  'She knows these streets. Learn faster.',
+];
 
-export class Police {
-  constructor(scene, rng, colliders) {
-    this.scene = scene;
-    this.rng = rng;
-    this.colliders = colliders;
-    this.cars = [];
-    this.stars = 0;
-    this.lastSeen = 999;     // seconds since any cruiser had eyes on Mari
-    this.decayT = 0;
-    this.bustedMeter = 0;
-    this.bustedEvent = false; // main consumes this and shows the BUSTED screen
-    this.time = 0;
+export function createPolice(g) {
+  const cars = [];
+  let spawnT = 0, radioCd = 0, lastWanted = 0;
+
+  function recompute() {
+    S.wanted = S.heat <= 0 ? 0 : Math.min(5, Math.ceil(S.heat / CFG.starHeat));
   }
-
-  get wanted() { return this.stars; }
-
-  setWanted(n) {
-    this.stars = Math.max(0, Math.min(MAX_STARS, Math.floor(n)));
-    if (this.stars > 0) this.lastSeen = 0;
+  function nearestStreet(v) {
+    return STREETS.reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a);
   }
-
-  // A crime guarantees at least n stars (never lowers the current level).
-  reportCrime(n) {
-    if (n > this.stars) this.setWanted(n);
-    else if (this.stars > 0) this.lastSeen = 0;
-  }
-
-  clearWanted() {
-    this.stars = 0;
-    this.bustedMeter = 0;
-    this.decayT = 0;
-    this.lastSeen = 999;
-  }
-
-  desiredCruisers() {
-    if (this.stars === 0) return 0;
-    return Math.min(POLICE_CAP, this.stars + 1);
-  }
-
-  spawnCruiser(playerPos) {
-    // On a street, well away from the player so it arrives, not appears.
-    const angle = this.rng.range(0, Math.PI * 2);
-    let x = playerPos.x + Math.sin(angle) * 150;
-    let z = playerPos.z + Math.cos(angle) * 150;
-    // Snap the larger axis onto a street line so it starts on a road.
-    if (Math.abs(Math.sin(angle)) > Math.abs(Math.cos(angle))) {
-      z = LINES.reduce((best, l) => (Math.abs(l - z) < Math.abs(best - z) ? l : best), LINES[0]);
-    } else {
-      x = LINES.reduce((best, l) => (Math.abs(l - x) < Math.abs(best - x) ? l : best), LINES[0]);
+  function spawnPos() {
+    const pp = g.player.pos();
+    for (let i = 0; i < 10; i++) {
+      const a = g.rng() * Math.PI * 2, d = 100 + g.rng() * 35;
+      const sx = nearestStreet(pp.x + Math.cos(a) * d);
+      const sz = nearestStreet(pp.z + Math.sin(a) * d);
+      if (Math.hypot(sx - pp.x, sz - pp.z) > 78) return { x: sx, z: sz };
     }
-    x = Math.max(-190, Math.min(190, x));
-    z = Math.max(-190, Math.min(200, z));
-    const car = createCar('police', 0xf2f4f6);
-    const heading = Math.atan2(playerPos.x - x, playerPos.z - z);
-    placeCar(car, x, z, heading);
-    car.occupied = true;
-    car.leaving = false;
-    this.scene.add(car.mesh);
-    this.cars.push(car);
+    return { x: nearestStreet(pp.x + 115), z: nearestStreet(pp.z) };
+  }
+  function spawnCar(x, z, heading) {
+    const car = createCar('police', 0xf0f2f0);
+    car.driver = 'police';
+    car.mesh.position.set(x, 0, z);
+    car.heading = heading || 0;
+    car.mesh.rotation.y = car.heading;
+    g.scene.add(car.mesh); g.cars.push(car); cars.push(car);
     return car;
   }
 
-  removeCruiser(car) {
-    this.scene.remove(car.mesh);
-    this.cars = this.cars.filter((c) => c !== car);
-  }
-
-  nearestDist(playerPos) {
-    let best = Infinity;
-    for (const car of this.cars) {
-      const cp = car.mesh.position;
-      const d = Math.hypot(cp.x - playerPos.x, cp.z - playerPos.z);
-      if (d < best) best = d;
-    }
-    return best;
-  }
-
-  // Is the straight run a→b free of buildings? (Sampled, arcade-cheap.)
-  hasLOS(a, b) {
-    const steps = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 3);
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      const x = a.x + (b.x - a.x) * t;
-      const z = a.z + (b.z - a.z) * t;
-      for (const c of this.colliders) {
-        if (x > c.x0 && x < c.x1 && z > c.z0 && z < c.z1) return false;
+  const api = {
+    cars,
+    reportCrime(kind) {
+      S.heat += CRIME_HEAT[kind] || 40;
+      if (kind === 'theft') S.heat = Math.max(S.heat, CFG.starHeat);
+      recompute();
+    },
+    setWanted(n) { S.heat = Math.max(S.heat, n * CFG.starHeat); recompute(); },
+    clearWanted() { S.heat = 0; S.wanted = 0; S.bustedMeter = 0; },
+    nearestDist() {
+      const pp = g.player.pos();
+      let d = Infinity;
+      for (const c of cars) d = Math.min(d, Math.hypot(c.mesh.position.x - pp.x, c.mesh.position.z - pp.z));
+      return d;
+    },
+    registerStatic(car) { car.driver = 'static'; cars.push(car); },
+    spawnAt(x, z, heading) { return spawnCar(x, z, heading); },
+    update(dt) {
+      const pp = g.player.pos();
+      const info = g.player.info();
+      let nearest = Infinity, seen = false;
+      for (const c of cars) {
+        const d = Math.hypot(c.mesh.position.x - pp.x, c.mesh.position.z - pp.z);
+        if (d < nearest) nearest = d;
+        if (d < CFG.seenRange) seen = true;
       }
-    }
-    return true;
-  }
+      if (seen) S.unseen = 0; else S.unseen += dt;
+      if (S.unseen > 6 && S.heat > 0) { S.heat = Math.max(0, S.heat - 13 * dt); recompute(); }
 
-  update(dt, player, allCars) {
-    this.time += dt;
-    const ppos = player.pos;
-    const want = this.desiredCruisers();
-
-    // Maintain the fleet size for the current wanted level.
-    const active = this.cars.filter((c) => !c.leaving);
-    if (active.length < want) this.spawnCruiser(ppos);
-    if (this.stars === 0) {
-      for (const car of this.cars) car.leaving = true;
-    }
-
-    // Visual contact: any active cruiser close enough has eyes on her.
-    let seen = false;
-    let nearest = Infinity;
-    for (const car of this.cars) {
-      const cp = car.mesh.position;
-      const d = Math.hypot(cp.x - ppos.x, cp.z - ppos.z);
-      if (d < nearest) nearest = d;
-      if (!car.leaving && d < SIGHT_RANGE) seen = true;
-    }
-    if (seen) { this.lastSeen = 0; this.decayT = 0; }
-    else this.lastSeen += dt;
-
-    // Star decay while hidden.
-    if (this.stars > 0 && this.lastSeen > LOSE_SIGHT_TIME) {
-      this.decayT += dt;
-      if (this.decayT >= STAR_DECAY_TIME) {
-        this.decayT = 0;
-        this.setWanted(this.stars - 1);
+      const desired = [0, 2, 3, 4, 5, 6][S.wanted] || 0;
+      spawnT -= dt;
+      const active = cars.filter(c => c.driver === 'police');
+      if (active.length < desired && spawnT <= 0) {
+        spawnT = 1.6;
+        const sp = spawnPos();
+        spawnCar(sp.x, sp.z, Math.atan2(pp.x - sp.x, pp.z - sp.z));
       }
-    } else {
-      this.decayT = 0;
-    }
-
-    // BUSTED: caught standing (or crawling) right next to a cruiser.
-    if (this.stars > 0 && player.speed < 1.1 && nearest < 10.5) {
-      this.bustedMeter += dt / BUST_TIME;
-      if (this.bustedMeter >= 1) {
-        this.bustedMeter = 0;
-        this.bustedEvent = true;
-      }
-    } else {
-      this.bustedMeter = Math.max(0, this.bustedMeter - dt * 0.7);
-    }
-
-    // Drive the cruisers.
-    const pVel = player.mode === 'car' && player.car
-      ? { x: Math.sin(player.car.heading) * player.car.speed, z: Math.cos(player.car.heading) * player.car.speed }
-      : { x: 0, z: 0 };
-    for (const car of [...this.cars]) {
-      const pos = car.mesh.position;
-      // Flash the light bar.
-      if (car.lightbar) {
-        const phase = Math.floor(this.time * 6) % 2 === 0;
-        car.lightbar.children[0].visible = phase;
-        car.lightbar.children[1].visible = !phase;
-      }
-      if (car.leaving) {
-        stepCar(car, dt, { throttle: car.speed < 10 ? 0.6 : 0, steer: 0, brake: false }, this.colliders, allCars);
-        const d = Math.hypot(pos.x - ppos.x, pos.z - ppos.z);
-        if (d > 190 || this.stars > 0) {
-          if (this.stars > 0) { car.leaving = false; }
-          else this.removeCruiser(car);
+      for (let i = cars.length - 1; i >= 0; i--) {
+        const c = cars[i];
+        if (c.driver === 'police' && Math.hypot(c.mesh.position.x - pp.x, c.mesh.position.z - pp.z) > 250) {
+          g.scene.remove(c.mesh);
+          g.cars.splice(g.cars.indexOf(c), 1);
+          cars.splice(i, 1);
         }
-        continue;
       }
-      // Wedged on a facade or stuck in a jam? Radio in a fresh unit: a
-      // cruiser that barely closes the distance for seconds at a time is
-      // replaced by one spawning on a clear street.
-      const distToPlayer = Math.hypot(ppos.x - pos.x, ppos.z - pos.z);
-      if (car.bestDist === undefined || distToPlayer < car.bestDist - 2) {
-        car.bestDist = distToPlayer;
-        car.progT = 0;
+      for (const car of cars) {
+        if (car.bar) {
+          const phase = Math.floor(S.time * 5.5) % 2;
+          car.bar.children[0].visible = phase === 0;
+          car.bar.children[1].visible = phase !== 0;
+        }
+        if (car.driver !== 'police') continue;
+        const p = car.mesh.position;
+        let tx = pp.x + info.vel.x * 0.45, tz = pp.z + info.vel.z * 0.45;
+        const distP = Math.hypot(tx - p.x, tz - p.z);
+        car.maxSpeed = distP > 70 ? 47 : 34.5; // rubber-band: distant units hurry (even a sports car feels pressure)
+        if (distP > 20) {
+          // Grid navigation: cruisers hunt along the streets, Manhattan-style —
+          // a straight line at the suspect crosses city blocks and wedges the
+          // car on a building face. Legs: own corner → the suspect's row or
+          // column → the suspect's corner → charge (handled below 20m).
+          const cx = nearestStreet(p.x), cz = nearestStreet(p.z);
+          const jx = nearestStreet(pp.x), jz = nearestStreet(pp.z);
+          if (Math.abs(p.x - cx) > 6 && Math.abs(p.z - cz) > 6) { tx = cx; tz = cz; }
+          else if (Math.abs(p.x - cx) <= Math.abs(p.z - cz)) { // on a vertical street
+            if (Math.abs(p.z - jz) > 6) { tx = cx; tz = jz; }
+            else if (Math.abs(p.x - jx) > 6) { tx = jx; tz = jz; }
+          } else { // on a horizontal street
+            if (Math.abs(p.x - jx) > 6) { tx = jx; tz = cz; }
+            else if (Math.abs(p.z - jz) > 6) { tx = jx; tz = jz; }
+          }
+        }
+        const desiredH = Math.atan2(tx - p.x, tz - p.z);
+        let diff = desiredH - car.heading;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        let steer = Math.max(-1, Math.min(1, diff * 1.9));
+        let throttle;
+        if (car.reverseT > 0) {
+          car.reverseT -= dt; throttle = -1; steer = -steer;
+        } else {
+          throttle = Math.abs(diff) > 1.6 ? 0.35 : 1;
+          // pull up beside the suspect and stop — charging at full throttle
+          // makes cruisers orbit through the player and the bust never lands
+          if (distP < 15) throttle = Math.min(throttle, Math.max(0, (distP - 3) / 10) * 0.9);
+          if (distP >= 8 && Math.abs(car.speed) < 0.6 && throttle > 0) {
+            car.stuckT += dt;
+            if (car.stuckT > 1.1) { car.reverseT = 0.75; car.stuckT = 0; }
+          } else car.stuckT = 0;
+        }
+        driveCar(car, dt, throttle, steer, g, false);
+      }
+      // BUSTED: caught standing near a cruiser
+      if (S.screen === 'playing' && S.wanted > 0) {
+        if (nearest < CFG.bustedRange && Math.abs(info.speed) < 1.2) {
+          S.bustedMeter = Math.min(1, S.bustedMeter + CFG.bustedFill * dt);
+          if (S.bustedMeter >= 1) { g.onBusted(); return; }
+        } else {
+          S.bustedMeter = Math.max(0, S.bustedMeter - CFG.bustedDecay * dt);
+        }
       } else {
-        car.progT = (car.progT || 0) + dt;
+        S.bustedMeter = Math.max(0, S.bustedMeter - CFG.bustedDecay * dt);
       }
-      const wedged = Math.abs(car.speed) < 0.9 && distToPlayer > 22;
-      if ((wedged && (car.stuckT = (car.stuckT || 0) + dt) > 4)
-        || (distToPlayer > 30 && car.progT > 6)) {
-        this.removeCruiser(car);
-        this.spawnCruiser(ppos);
-        continue;
+      // Calloway on the radio when the heat steps up
+      radioCd -= dt;
+      if (S.wanted > lastWanted && S.wanted >= 2 && radioCd <= 0 && S.screen === 'playing') {
+        radioCd = 26;
+        g.hud.showDialogue('DET. CALLOWAY', pick(g.rng, RADIO_LINES), 3.6);
       }
-      if (!wedged) car.stuckT = 0;
-      // Intercept: aim where she will be, favouring her rear quarter.
-      // When a building blocks the line, aim for her nearest intersection
-      // first — cruisers hunt along streets, not through facades.
-      let tx = ppos.x + pVel.x * 0.45 - Math.sin(player.heading) * 2.5;
-      let tz = ppos.z + pVel.z * 0.45 - Math.cos(player.heading) * 2.5;
-      const distNow = Math.hypot(ppos.x - pos.x, ppos.z - pos.z);
-      if (distNow > 34 && !this.hasLOS(pos, ppos)) {
-        tx = Math.round(ppos.x / PITCH) * PITCH;
-        tz = Math.round(ppos.z / PITCH) * PITCH;
-      }
-      const dx = tx - pos.x, dz = tz - pos.z;
-      const dist = Math.hypot(dx, dz);
-      const desired = Math.atan2(dx, dz);
-      let diff = desired - car.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      const steer = Math.max(-1, Math.min(1, diff * 2.4));
-      let throttle = 1;
-      if (dist < 7) throttle = 0.25;
-      if (Math.abs(diff) > 2.4 && car.speed > 6) throttle = -0.6; // too sharp: back up
-      stepCar(car, dt, { throttle, steer, brake: false }, this.colliders, allCars);
-    }
-  }
+      lastWanted = S.wanted;
+    },
+  };
+  return api;
 }
