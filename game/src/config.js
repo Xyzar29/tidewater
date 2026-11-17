@@ -1,90 +1,81 @@
-// config.js — world layout, tuning constants and landmark data for TIDEWATER.
-// Everything spatial about Port Serena lives here so the other systems agree.
+// config.js — every shared constant for TIDEWATER lives here: the shape of
+// Port Serena's street grid, tuning for cars / police / combat, the named
+// places missions point at, and the palette the city is painted with.
 
-export const STEP = 1 / 60; // fixed simulation step (seconds)
+export const PITCH = 56;          // distance between neighbouring street centrelines
+export const ROAD_W = 14;         // asphalt width of one street
+export const BLOCK = PITCH - ROAD_W; // buildable square inside four streets
+export const GRID = 3;            // streets run from -GRID..GRID on both axes
+export const CITY_EDGE = GRID * PITCH + ROAD_W / 2; // outer kerb line (~175)
+export const BEACH_Z = 196;       // sand starts here, sea beyond 224
+export const SEA_Z = 224;
 
-// Street grid. Roads are 16 m wide, centred on these coordinates.
-export const ROADS_X = [-270, -180, -90, 0, 90, 180, 270];
-export const ROADS_Z = [-270, -180, -90, 0, 90, 180];
-export const BEACH_ROAD_Z = 232; // east-west promenade road along the sand
-export const ROAD_HALF = 8;
-export const LANE = 3.4; // lane offset from a road centreline
+export const STEP = 1 / 60;       // fixed simulation step (seconds)
+export const START_MONEY = 120;
 
-// Playable bounds. South of the promenade: sand, then sea (blocked).
-export const BOUNDS = { minX: -322, maxX: 322, minZ: -322, maxSandZ: 292 };
-export const SEA_Z = 296;
+// Player tuning
+export const WALK_SPEED = 4.2;
+export const RUN_SPEED = 7.0;
+export const PLAYER_RADIUS = 0.55;
+export const PLAYER_MAX_HP = 100;
 
-// Named places. x/z are street-level marker points in front of each building.
+// Car tuning
+export const CAR_RADIUS = 1.7;
+export const CAR_ACCEL = 9.5;
+export const CAR_BRAKE = 16;
+export const CAR_DRAG = 0.55;
+export const CAR_MAX_SPEED = 30;      // ~108 km/h forwards
+export const CAR_MAX_REVERSE = 9;
+export const CAR_STEER = 0.62;        // radians of wheel angle at full lock
+
+// Wanted / police tuning
+export const MAX_STARS = 5;
+export const POLICE_CAP = 6;
+export const POLICE_SPEED = 31;       // cruisers are a touch faster than traffic
+export const SIGHT_RANGE = 78;        // beyond this the police lose visual contact
+export const LOSE_SIGHT_TIME = 9;     // seconds unseen before a star can decay
+export const STAR_DECAY_TIME = 7;     // seconds between star drops while hidden
+export const BUST_TIME = 2.6;         // seconds stood near police to be busted
+
+// Combat tuning
+export const PISTOL_DAMAGE = 34;
+export const PISTOL_MAG = 12;
+export const PISTOL_RESERVE_START = 96;
+export const ENEMY_HP = 100;
+export const ENEMY_DAMAGE = 7;        // per landed enemy bullet
+export const MELEE_DAMAGE = 40;
+export const MELEE_RANGE = 2.1;
+
+// Named places in Port Serena. x grows east, z grows south; north is -z.
 export const LANDMARKS = {
-  safehouse: { x: -225, z: -182, name: "Mari's Safehouse" },
-  garage: { x: 135, z: 86, name: "Dario's Garage" },
-  hotel: { x: 45, z: 222, name: 'Serena Hotel' },
-  casino: { x: 225, z: -2, name: 'Casino Serena' },
-  warehouse: { x: 225, z: 178, name: 'Pier 9 Warehouse' },
-  hospital: { x: -225, z: -94, name: 'Serena General Hospital' },
-  precinct: { x: 45, z: -182, name: 'PSPD Precinct' },
-  marina: { x: 282, z: 216, name: 'Port Serena Marina' },
-  pier: { x: 282, z: 246, name: 'Marina Pier' },
+  garage:    { x: -150, z: 8,    name: "Dario's Garage" },
+  marina:    { x: 148,  z: 208,  name: 'Port Serena Marina' },
+  hotel:     { x: 62,   z: 178,  name: 'Serena Hotel' },
+  docks:     { x: 178,  z: -30,  name: 'The Docks' },
+  warehouse: { x: 172,  z: -64,  name: 'Pier 9 Warehouse' },
+  casino:    { x: 104,  z: -152, name: 'Casino Serena' },
+  hospital:  { x: -58,  z: -158, name: 'Serena General Hospital' },
+  precinct:  { x: 30,   z: -104, name: 'PSPD Precinct' },
+  safehouse: { x: -172, z: 118,  name: "Mari's Safehouse" },
 };
 
-// Where the yellow sports car waits in mission 2 (parked on the promenade).
-export const SPORTS_SPOT = { x: 62, z: 228.6, heading: Math.PI / 2 };
+// Which district a point falls in — the HUD shows this under the health bar.
+export function districtAt(x, z) {
+  if (z >= 150) return 'BEACHFRONT';
+  if (x >= 138) return 'DOCKSIDE';
+  if (x <= -118) return 'SUBURBS';
+  if (z <= -108) return 'DOWNTOWN';
+  return 'MIDTOWN';
+}
 
-// Cash-bag pickup points for mission 3, around the dockside blocks.
-export const CASH_BAGS = [
-  { x: 252, z: 150 },
-  { x: 262, z: 196 },
-  { x: 196, z: 118 },
+// Pastel facade colours the buildings pick from (golden-hour Port Serena).
+export const FACADE_COLORS = [
+  0xf6d8b1, 0xf3c6c6, 0xcfe4f7, 0xfdf3c9, 0xd8ecd2,
+  0xf9e2c0, 0xe6d7f2, 0xcfe8e4, 0xfbe3d3, 0xeef0d5,
 ];
 
-// Checkpoint gates for mission 4, run in this order.
-export const CHECKPOINTS = [
-  { x: 90, z: 180 },
-  { x: 270, z: 90 },
-  { x: 180, z: -90 },
-  { x: 0, z: -180 },
-  { x: -180, z: -90 },
-  { x: -90, z: 90 },
-];
-
-// Population caps (brief performance budget).
-export const CAPS = { traffic: 24, parked: 22, peds: 30, police: 6 };
-
-// Wanted / police tuning.
-export const WANTED = {
-  heatPerStar: 100, // heat points per star
-  decayDelay: 6, // seconds unseen before heat starts to bleed off
-  decayRate: 9, // heat per second while hidden
-  bustedTime: 2.6, // seconds stopped near police to be busted
-  spawnDist: 82, // metres from the player where cruisers appear
-};
-
-// Player tuning.
-export const PLAYER = {
-  walkSpeed: 4.3,
-  runSpeed: 7.6,
-  radius: 0.55,
-  startMoney: 120,
-  hospitalFeeRate: 0.1,
-};
-
-// Car tuning by body type.
-export const CAR_TYPES = {
-  sedan: { topSpeed: 25, accel: 13, grip: 3.4, len: 4.3, wid: 1.9 },
-  hatch: { topSpeed: 22, accel: 12, grip: 3.6, len: 3.8, wid: 1.8 },
-  wagon: { topSpeed: 23, accel: 11.5, grip: 3.3, len: 4.6, wid: 1.95 },
-  sports: { topSpeed: 34, accel: 19, grip: 4.2, len: 4.2, wid: 1.9 },
-  van: { topSpeed: 19, accel: 9, grip: 2.8, len: 5.2, wid: 2.1 },
-  police: { topSpeed: 29, accel: 16, grip: 3.8, len: 4.5, wid: 1.95 },
-};
-
+// Civilian car paint jobs.
 export const CAR_COLORS = [
-  0xf2f0eb, 0xd94f3d, 0x3d7bd9, 0x53b06a, 0xf2b13d, 0x8a5fc0,
-  0x3fc1c9, 0xe77fb0, 0x9aa3ab, 0x2f3542, 0xff7f50, 0x7bc47f,
-];
-
-// Pastel building palette for the sun-soaked look.
-export const BUILDING_TINTS = [
-  0xf6e3c5, 0xf3cfb3, 0xeec9d2, 0xcfe4ee, 0xd8ecd2, 0xf7efd2,
-  0xe8d8f0, 0xd2e6e0, 0xf9e0b8, 0xe6ecf5, 0xf5d7c4, 0xdcead8,
+  0xd94f3d, 0x3d7bd9, 0xf2f0e6, 0x555f6e, 0xf5b921,
+  0x53b06a, 0x8e6cc9, 0xe77fb1, 0x37b6c9, 0xc0c6ce,
 ];

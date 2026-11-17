@@ -1,114 +1,108 @@
-// minimap.js — north-up canvas radar: street grid, beach + sea, traffic
-// dots, flashing police blips, the gold mission marker and Mari's arrow.
+// minimap.js — the radar: a north-up, player-centred canvas map. Roads,
+// the sea, traffic dots, flashing red/blue police blips, enemies and the
+// gold mission marker, redrawn every frame from live game state.
 
-import { ROADS_X, ROADS_Z, BEACH_ROAD_Z } from './config.js';
+import { PITCH, GRID, SEA_Z } from './config.js';
 
-export function createMinimap(G) {
-  const canvas = document.getElementById('minimap');
+const LINES = [];
+for (let k = -GRID; k <= GRID; k++) LINES.push(k * PITCH);
+const VIEW = 118; // metres from centre to edge
+
+export function drawMinimap(canvas, G) {
   const ctx = canvas.getContext('2d');
-  const SIZE = canvas.width; // 190
-  const VIEW = 125; // metres from centre to edge
-  const scale = SIZE / 2 / VIEW;
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H / 2;
+  const scale = cx / VIEW;
+  const p = G.player.pos;
+  const toX = (x) => cx + (x - p.x) * scale;
+  const toY = (z) => cy + (z - p.z) * scale;
 
-  function update() {
-    const p = G.player;
-    const cx = SIZE / 2, cy = SIZE / 2;
-    const toX = (x) => cx + (x - p.x) * scale;
-    const toY = (z) => cy + (z - p.z) * scale;
-    ctx.fillStyle = '#20262c';
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    // sea + sand to the south
-    const seaY = toY(296);
-    if (seaY < SIZE) {
-      ctx.fillStyle = '#c9b078';
-      ctx.fillRect(0, Math.max(0, toY(240)), SIZE, Math.max(0, seaY - toY(240)));
-      ctx.fillStyle = '#2f7fb8';
-      ctx.fillRect(0, Math.max(0, seaY), SIZE, SIZE - Math.max(0, seaY));
-    }
-    // roads
-    ctx.strokeStyle = '#4a545e';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    for (const rx of ROADS_X) {
-      const x = toX(rx);
-      if (x < -6 || x > SIZE + 6) continue;
-      ctx.moveTo(x, Math.max(0, toY(-322)));
-      ctx.lineTo(x, Math.min(SIZE, toY(232)));
-    }
-    for (const rz of [...ROADS_Z, BEACH_ROAD_Z]) {
-      const y = toY(rz);
-      if (y < -6 || y > SIZE + 6) continue;
-      ctx.moveTo(Math.max(0, toX(-322)), y);
-      ctx.lineTo(Math.min(SIZE, toX(322)), y);
-    }
-    ctx.stroke();
-    // traffic dots
-    ctx.fillStyle = 'rgba(230,235,240,0.75)';
-    for (const car of G.cars) {
-      if (car.driver === 'police' || car.driver === 'player') continue;
-      const x = toX(car.x), y = toY(car.z);
-      if (x < 0 || x > SIZE || y < 0 || y > SIZE) continue;
-      ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
-    }
-    // enemies
-    if (G.combat) {
-      ctx.fillStyle = '#e5484d';
-      for (const e of G.combat.enemies) {
-        if (e.dead) continue;
-        const x = toX(e.x), y = toY(e.z);
-        if (x < 0 || x > SIZE || y < 0 || y > SIZE) continue;
-        ctx.beginPath();
-        ctx.arc(x, y, 2.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    // police blips, alternating red/blue like the lightbar
-    if (G.police) {
-      const phase = Math.floor(G.state.time * 2.4) % 2;
-      ctx.fillStyle = phase ? '#ff4040' : '#4d7cff';
-      for (const u of G.police.units) {
-        const x = toX(u.x), y = toY(u.z);
-        if (x < 0 || x > SIZE || y < 0 || y > SIZE) continue;
-        ctx.beginPath();
-        ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    // mission marker (gold diamond, clamped to the rim when far)
-    const obj = G.missions ? G.missions.objective : null;
-    let mx = null, my = null;
-    if (obj && obj.x !== null && obj.x !== undefined) { mx = obj.x; my = obj.z; }
-    else if (G.missions && !G.missions.active && G.missions.nextIndex < 6 && G.state.screen === 'playing') {
-      mx = 135; my = 86;
-    }
-    if (mx !== null) {
-      let x = toX(mx), y = toY(my);
-      x = Math.max(9, Math.min(SIZE - 9, x));
-      y = Math.max(9, Math.min(SIZE - 9, y));
-      ctx.fillStyle = '#ffc93d';
-      ctx.beginPath();
-      ctx.moveTo(x, y - 6);
-      ctx.lineTo(x + 5, y);
-      ctx.lineTo(x, y + 6);
-      ctx.lineTo(x - 5, y);
-      ctx.closePath();
-      ctx.fill();
-    }
-    // player arrow
-    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
-    const rxv = -fz, rzv = fx;
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.moveTo(cx + fx * 8, cy + fz * 8);
-    ctx.lineTo(cx - fx * 6 + rxv * 5, cy - fz * 6 + rzv * 5);
-    ctx.lineTo(cx - fx * 6 - rxv * 5, cy - fz * 6 - rzv * 5);
-    ctx.closePath();
-    ctx.fill();
-    // rim
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, SIZE - 2, SIZE - 2);
+  ctx.fillStyle = '#232a31';
+  ctx.fillRect(0, 0, W, H);
+
+  // The sea, when the coast is in view.
+  const seaY = toY(SEA_Z);
+  if (seaY < H) {
+    ctx.fillStyle = '#2f8fb8';
+    ctx.fillRect(0, Math.max(0, seaY), W, H - Math.max(0, seaY));
+    ctx.fillStyle = '#f2ddae';
+    ctx.fillRect(0, Math.max(0, seaY - 12 * scale), W, 12 * scale);
   }
 
-  return { update };
+  // Roads.
+  ctx.strokeStyle = '#4d565f';
+  ctx.lineWidth = Math.max(2, 7 * scale);
+  ctx.beginPath();
+  for (const l of LINES) {
+    const x = toX(l);
+    if (x > -10 && x < W + 10) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    const y = toY(l);
+    if (y > -10 && y < H + 10) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  }
+  ctx.stroke();
+
+  // Traffic: pale dots.
+  ctx.fillStyle = '#c9ced4';
+  for (const car of G.traffic.cars) {
+    const x = toX(car.mesh.position.x), y = toY(car.mesh.position.z);
+    if (x < 0 || x > W || y < 0 || y > H) continue;
+    ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
+  }
+
+  // Enemies: red dots.
+  ctx.fillStyle = '#ff5147';
+  for (const e of G.combat.enemies) {
+    if (!e.alive) continue;
+    const x = toX(e.mesh.position.x), y = toY(e.mesh.position.z);
+    if (x < 0 || x > W || y < 0 || y > H) continue;
+    ctx.beginPath();
+    ctx.arc(x, y, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Police: blips that alternate red/blue, like the light bars.
+  const phase = Math.floor(G.time * 5) % 2 === 0;
+  for (const car of G.police.cars) {
+    const x = toX(car.mesh.position.x), y = toY(car.mesh.position.z);
+    const bx = Math.max(4, Math.min(W - 4, x)), by = Math.max(4, Math.min(H - 4, y));
+    ctx.fillStyle = phase ? '#ff3b30' : '#3b82f6';
+    ctx.beginPath();
+    ctx.arc(bx, by, 3.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Mission marker: a gold diamond, clamped to the edge when far away.
+  const marker = G.missions ? G.missions.markerPos() : null;
+  if (marker) {
+    let x = toX(marker.x), y = toY(marker.z);
+    x = Math.max(9, Math.min(W - 9, x));
+    y = Math.max(9, Math.min(H - 9, y));
+    ctx.fillStyle = '#ffd21f';
+    ctx.beginPath();
+    ctx.moveTo(x, y - 6);
+    ctx.lineTo(x + 5, y);
+    ctx.lineTo(x, y + 6);
+    ctx.lineTo(x - 5, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#7a5c00';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Mari: a white arrow pointing her way (north is up).
+  const h = G.player.heading;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(cx + Math.sin(h) * 8, cy + Math.cos(h) * 8);
+  ctx.lineTo(cx + Math.sin(h + 2.5) * 6, cy + Math.cos(h + 2.5) * 6);
+  ctx.lineTo(cx + Math.sin(h - 2.5) * 6, cy + Math.cos(h - 2.5) * 6);
+  ctx.closePath();
+  ctx.fill();
+
+  // North tick.
+  ctx.fillStyle = '#e8e4d2';
+  ctx.font = 'bold 10px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('N', cx, 12);
 }
