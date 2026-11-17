@@ -6,157 +6,176 @@
 <title>TIDEWATER — Port Serena</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1210; }
-  body { font-family: system-ui, "Segoe UI", Roboto, sans-serif; color: #fff; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #10151b;
+    font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #f4f1e8; }
   #game { position: fixed; inset: 0; }
   #game canvas { display: block; }
 
   /* ---------- HUD ---------- */
-  #hud { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .4s; }
-  #hud.on { opacity: 1; }
-  .pill { background: rgba(12, 16, 22, .62); border-radius: 10px; backdrop-filter: blur(2px); }
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  .plate { position: absolute; top: 14px; left: 16px; }
+  #nameplate { font-weight: 800; letter-spacing: 2.5px; font-size: 14px;
+    text-shadow: 0 1px 3px rgba(0,0,0,.65); }
+  #health { margin-top: 6px; width: 218px; height: 13px; border-radius: 7px;
+    background: rgba(10,16,22,.55); border: 1px solid rgba(255,255,255,.25); overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: #58d977; border-radius: 7px;
+    transition: width .18s ease; }
+  #district { margin-top: 6px; font-size: 12px; font-weight: 700; letter-spacing: 3.5px;
+    color: #ffe9b0; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
 
-  #who { position: absolute; top: 14px; left: 16px; }
-  #player-name { font-size: 13px; font-weight: 700; letter-spacing: .14em; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
-  #health-track { width: 218px; height: 13px; margin-top: 5px; background: rgba(10,10,10,.55); border-radius: 7px; overflow: hidden; border: 1px solid rgba(255,255,255,.25); }
-  #health-fill { height: 100%; width: 100%; background: #57d95e; transition: width .18s; }
+  .wallet { position: absolute; top: 12px; right: 18px; text-align: right; }
+  #money { font-size: 30px; font-weight: 800; color: #69e58a;
+    text-shadow: 0 2px 5px rgba(0,0,0,.6); }
+  #stars { font-size: 21px; letter-spacing: 3px; color: #ffd166;
+    text-shadow: 0 1px 4px rgba(0,0,0,.7); }
 
-  #purse { position: absolute; top: 12px; right: 18px; text-align: right; }
-  #money { font-size: 27px; font-weight: 800; color: #69e58a; text-shadow: 0 2px 4px rgba(0,0,0,.55); }
-  #stars { font-size: 21px; color: #ffd23e; letter-spacing: .12em; text-shadow: 0 1px 3px rgba(0,0,0,.6); opacity: .25; }
+  #objective-pill { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    max-width: 620px; background: rgba(10,18,26,.62); border: 1px solid rgba(255,209,102,.35);
+    border-radius: 12px; padding: 9px 20px 10px; text-align: center; backdrop-filter: blur(3px); }
+  #objective { font-size: 16.5px; font-weight: 650; color: #ffeec2; white-space: nowrap; }
+  #objective-timer { font-size: 14px; font-weight: 800; color: #ffd166; margin-top: 1px; }
 
-  #objective { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); max-width: 560px;
-    padding: 9px 20px; text-align: center; transition: opacity .3s; }
-  #obj-text { font-size: 16.5px; font-weight: 600; color: #ffe9b0; }
-  #obj-timer { font-size: 15px; font-weight: 700; color: #ffd75e; margin-top: 2px; }
+  #notify { position: absolute; top: 96px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .note { background: rgba(10,18,26,.72); border-left: 4px solid #ffd166; color: #fff;
+    padding: 7px 16px; border-radius: 8px; font-size: 14.5px; font-weight: 600;
+    box-shadow: 0 3px 10px rgba(0,0,0,.35); animation: notein .18s ease; }
+  @keyframes notein { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; } }
 
-  #banner { position: absolute; top: 108px; left: 50%; transform: translateX(-50%); padding: 10px 26px;
-    font-size: 19px; font-weight: 800; letter-spacing: .04em; background: rgba(23, 42, 66, .78);
-    border-radius: 24px; opacity: 0; transition: opacity .35s; white-space: nowrap; }
+  #minimap { position: absolute; left: 16px; bottom: 16px; width: 196px; height: 196px;
+    border-radius: 12px; border: 2px solid rgba(255,255,255,.35);
+    box-shadow: 0 4px 16px rgba(0,0,0,.45); background: #232a31; }
 
-  #notify { position: absolute; top: 168px; left: 50%; transform: translateX(-50%); padding: 7px 18px;
-    font-size: 14.5px; font-weight: 600; opacity: 0; transition: opacity .3s; white-space: nowrap; }
+  #dialogue { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
+    width: 660px; max-width: 72vw; background: rgba(8,14,20,.82); border-radius: 12px;
+    border-left: 5px solid #ffd166; padding: 13px 20px 14px 18px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.5); }
+  #dialogue-speaker { color: #ffd166; font-weight: 800; font-size: 13.5px;
+    letter-spacing: 1.6px; text-transform: uppercase; margin-bottom: 3px; }
+  #dialogue-text { font-size: 17.5px; line-height: 1.35; }
 
-  #district { position: absolute; top: 64px; left: 16px; font-size: 12px; font-weight: 700;
-    letter-spacing: .22em; text-transform: uppercase; color: rgba(255,255,255,.85); text-shadow: 0 1px 3px rgba(0,0,0,.6); }
-
-  #minimap { position: absolute; left: 16px; bottom: 16px; width: 184px; height: 184px;
-    border-radius: 12px; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
-
-  #dialogue { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); width: min(680px, 72vw);
-    background: rgba(13, 17, 23, .88); border-left: 4px solid #ffd23e; border-radius: 8px;
-    padding: 12px 18px 13px; opacity: 0; transition: opacity .3s; }
-  #dlg-name { font-size: 13.5px; font-weight: 800; letter-spacing: .08em; color: #ffd23e; margin-bottom: 3px; }
-  #dlg-text { font-size: 16.5px; line-height: 1.35; }
-
-  #hint { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%); padding: 7px 16px;
-    font-size: 14px; font-weight: 600; opacity: 0; transition: opacity .3s; white-space: nowrap; }
+  #hint { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%);
+    background: rgba(10,18,26,.55); padding: 6px 16px; border-radius: 999px;
+    font-size: 13.5px; font-weight: 600; color: #e8e4da; white-space: nowrap; }
 
   #ammo { position: absolute; right: 20px; bottom: 22px; font-size: 19px; font-weight: 800;
-    letter-spacing: .06em; text-shadow: 0 2px 4px rgba(0,0,0,.6); opacity: 0; transition: opacity .25s; }
+    letter-spacing: 1.5px; color: #f4f1e8; text-shadow: 0 2px 5px rgba(0,0,0,.7); }
 
-  #crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
-    border-radius: 50%; background: rgba(255,255,255,.9); box-shadow: 0 0 4px rgba(0,0,0,.8); opacity: 0; }
+  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    font-size: 22px; font-weight: 300; color: rgba(255,255,255,.85);
+    text-shadow: 0 0 4px rgba(0,0,0,.8); }
 
-  #busted-wrap { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); width: 300px;
-    text-align: center; opacity: 0; transition: opacity .2s; }
-  #busted-label { font-size: 17px; font-weight: 800; letter-spacing: .3em; color: #ff8a7a; text-shadow: 0 2px 5px rgba(0,0,0,.7); margin-bottom: 6px; }
-  #busted-track { height: 10px; background: rgba(10,10,10,.6); border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,.3); }
-  #busted-fill { height: 100%; width: 0%; background: #e0483e; }
+  #busted { position: absolute; left: 50%; top: 34%; transform: translateX(-50%);
+    width: 300px; text-align: center; }
+  #busted-label { font-size: 21px; font-weight: 900; letter-spacing: 5px; color: #ff6b6b;
+    text-shadow: 0 2px 6px rgba(0,0,0,.8); margin-bottom: 7px; }
+  #busted-bar { height: 11px; border-radius: 6px; background: rgba(10,16,22,.6);
+    border: 1px solid rgba(255,255,255,.35); overflow: hidden; }
+  #busted-fill { height: 100%; width: 0%; background: #ff4747; }
 
-  /* ---------- Screens ---------- */
-  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    flex-direction: column; text-align: center; background: radial-gradient(ellipse at 50% 38%, rgba(30,20,14,.25), rgba(10,8,8,.72));
-    z-index: 5; padding: 24px; }
-  .screen.on { display: flex; }
-  .screen h1 { font-size: 64px; font-weight: 900; letter-spacing: .1em; color: #ffe9b0;
-    text-shadow: 0 4px 0 #c96f2e, 0 8px 26px rgba(0,0,0,.6); }
-  .screen h2 { font-size: 40px; font-weight: 900; letter-spacing: .14em; }
-  .screen .sub { margin-top: 8px; font-size: 17px; color: #ffe1c4; max-width: 620px; line-height: 1.45; }
-  .screen .story { margin-top: 10px; font-size: 15px; color: rgba(255,255,255,.85); max-width: 560px; line-height: 1.5; }
-  .btn { pointer-events: auto; cursor: pointer; margin-top: 16px; padding: 12px 34px; font-size: 17px; font-weight: 800;
-    letter-spacing: .05em; color: #241703; background: linear-gradient(180deg, #ffd75e, #f2a93b); border: none;
-    border-radius: 10px; box-shadow: 0 4px 14px rgba(0,0,0,.45); }
-  .btn:hover { filter: brightness(1.08); }
-  .btn.ghost { background: rgba(255,255,255,.14); color: #fff; box-shadow: none; }
-  .btn:disabled { opacity: .35; cursor: default; }
-  .controls { margin-top: 22px; font-size: 13.5px; line-height: 1.9; color: rgba(255,255,255,.78); }
-  .controls b { color: #ffd75e; font-weight: 700; }
-  #screen-busted h2 { color: #ff8a7a; }
-  #screen-wasted h2 { color: #e0483e; }
+  #dmg { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 52%, rgba(200,20,20,.5) 100%); }
+
+  /* ---------- screens ---------- */
+  .screen { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: linear-gradient(180deg, rgba(16,32,46,.82), rgba(10,16,24,.9)); }
+  .screen h1 { font-size: 74px; font-weight: 900; letter-spacing: 12px; color: #ffe9b0;
+    text-shadow: 0 4px 0 #c96f2e, 0 10px 34px rgba(0,0,0,.6); }
+  .screen h2 { font-size: 46px; font-weight: 900; letter-spacing: 8px; }
+  .tagline { margin-top: 8px; font-size: 17px; color: #bfe6f2; letter-spacing: 1px; }
+  .blurb { margin-top: 16px; max-width: 560px; font-size: 15px; line-height: 1.55; color: #d8d2c2; }
+  .btns { margin-top: 30px; display: flex; gap: 14px; }
+  button { pointer-events: auto; cursor: pointer; border: 0; border-radius: 10px;
+    padding: 13px 34px; font-size: 16.5px; font-weight: 800; letter-spacing: 1.5px;
+    background: #ffd166; color: #27303a; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+  button:hover { background: #ffdd8a; }
+  button.ghost { background: rgba(255,255,255,.13); color: #f4f1e8;
+    border: 1px solid rgba(255,255,255,.4); }
+  .controls { margin-top: 30px; font-size: 13.5px; line-height: 1.9; color: #aebac2; }
+  .controls b { color: #ffe9b0; font-weight: 700; }
+  .fine { margin-top: 18px; font-size: 12.5px; color: #7e8b94; letter-spacing: 1px; }
+  #busted-screen h2 { color: #ff6b6b; }
+  #wasted-screen h2 { color: #ff6b6b; }
+  #complete-screen h2 { color: #ffd166; }
+  .screen .big-note { margin-top: 10px; font-size: 17px; color: #e8e2d2; }
 </style>
 </head>
 <body>
 <div id="game"></div>
 
 <div id="hud">
-  <div id="who">
-    <div id="player-name">MARISOL &ldquo;MARI&rdquo; VEGA</div>
-    <div id="health-track"><div id="health-fill"></div></div>
+  <div class="plate">
+    <div id="nameplate">MARISOL “MARI” VEGA</div>
+    <div id="health"><div id="health-fill"></div></div>
+    <div id="district">DOWNTOWN</div>
   </div>
-  <div id="district"></div>
-  <div id="purse">
-    <div id="money">$0</div>
-    <div id="stars"></div>
+  <div class="wallet">
+    <div id="money">$120</div>
+    <div id="stars">☆☆☆☆☆</div>
   </div>
-  <div id="objective" class="pill">
-    <div id="obj-text"></div>
-    <div id="obj-timer"></div>
+  <div id="objective-pill">
+    <div id="objective">Welcome to Port Serena</div>
+    <div id="objective-timer" style="display:none"></div>
   </div>
-  <div id="banner"></div>
-  <div id="notify" class="pill"></div>
-  <canvas id="minimap" width="184" height="184"></canvas>
-  <div id="hint" class="pill"></div>
-  <div id="dialogue">
-    <div id="dlg-name"></div>
-    <div id="dlg-text"></div>
+  <div id="notify"></div>
+  <canvas id="minimap" width="196" height="196"></canvas>
+  <div id="hint" style="display:none"></div>
+  <div id="dialogue" style="display:none">
+    <div id="dialogue-speaker">Dario Fuentes</div>
+    <div id="dialogue-text"></div>
   </div>
-  <div id="ammo"></div>
-  <div id="crosshair"></div>
-  <div id="busted-wrap">
+  <div id="ammo" style="display:none"></div>
+  <div id="crosshair" style="display:none">+</div>
+  <div id="busted" style="display:none">
     <div id="busted-label">BUSTED</div>
-    <div id="busted-track"><div id="busted-fill"></div></div>
+    <div id="busted-bar"><div id="busted-fill"></div></div>
   </div>
 </div>
+<div id="dmg"></div>
 
-<div id="screen-title" class="screen on">
+<div class="screen" id="title-screen">
   <h1>TIDEWATER</h1>
-  <div class="sub">Port Serena. One courier, one fixer, and a police department
-    with a long memory. Drive the jobs, dodge Detective Calloway, and get out rich.</div>
-  <button id="btn-new" class="btn">NEW GAME</button>
-  <button id="btn-continue" class="btn ghost">CONTINUE</button>
+  <div class="tagline">Port Serena · one courier, one fixer, five stars</div>
+  <div class="blurb">Marisol “Mari” Vega runs packages for fixer Dario Fuentes in a
+    sun-soaked coastal city of pastel towers and palm-lined streets. Six jobs, a
+    rival crew, and Detective Ruth Calloway's PSPD between her and the tide going out.</div>
+  <div class="btns">
+    <button id="btn-new">NEW GAME</button>
+    <button id="btn-continue" class="ghost" style="display:none">CONTINUE</button>
+  </div>
   <div class="controls">
-    <b>WASD</b> move / drive &nbsp;·&nbsp; <b>Mouse</b> look (click the game to capture) &nbsp;·&nbsp; <b>E</b> enter / exit car<br>
-    <b>F / Click</b> melee &nbsp;·&nbsp; <b>Q</b> draw pistol, <b>Click</b> shoot, <b>R</b> reload &nbsp;·&nbsp; <b>Shift</b> run &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute
+    <b>W A S D</b> move / drive &nbsp;·&nbsp; <b>Mouse</b> look (click to capture) &nbsp;·&nbsp; <b>E</b> enter / exit car<br>
+    <b>F</b> melee &nbsp;·&nbsp; <b>Q</b> draw pistol &nbsp;·&nbsp; <b>Click</b> shoot &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>Shift</b> run<br>
+    <b>Space</b> brake &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute
+  </div>
+  <div class="fine">AN ORIGINAL OPEN-WORLD CRIME GAME · RUNS FULLY OFFLINE</div>
+</div>
+
+<div class="screen" id="pause-screen" style="display:none">
+  <h2>PAUSED</h2>
+  <div class="btns">
+    <button id="btn-resume">RESUME</button>
+    <button id="btn-restart" class="ghost">NEW GAME</button>
   </div>
 </div>
 
-<div id="screen-pause" class="screen">
-  <h2>PAUSED</h2>
-  <div class="sub">Port Serena waits for no one. Well — just this once.</div>
-  <button id="btn-resume" class="btn">RESUME</button>
-  <button id="btn-quit" class="btn ghost">QUIT TO TITLE</button>
-</div>
-
-<div id="screen-busted" class="screen">
+<div class="screen" id="busted-screen" style="display:none">
   <h2>BUSTED</h2>
-  <div class="sub" id="busted-text">Detective Calloway finally gets her collar.</div>
-  <button id="btn-busted-ok" class="btn">PAY THE FINE</button>
+  <div class="big-note" id="busted-text">The PSPD got their cuffs on you.</div>
+  <div class="btns"><button id="btn-busted-ok">WALK OUT OF THE PRECINCT</button></div>
 </div>
 
-<div id="screen-wasted" class="screen">
+<div class="screen" id="wasted-screen" style="display:none">
   <h2>WASTED</h2>
-  <div class="sub" id="wasted-text">You wake up at Port Serena General, lighter by a hospital fee.</div>
-  <button id="btn-wasted-ok" class="btn">LEAVE HOSPITAL</button>
+  <div class="big-note" id="wasted-text">You wake up at Serena General.</div>
+  <div class="btns"><button id="btn-wasted-ok">LEAVE THE HOSPITAL</button></div>
 </div>
 
-<div id="screen-complete" class="screen">
-  <h2 style="color:#ffd75e">THE LAST TIDE</h2>
-  <div class="story">The boat cuts south through gold water, the cash van a shrinking
-    story on the evening news. Dario's voice crackles over the radio one last time:
-    &ldquo;Port Serena is yours now, Mari. Try not to give it back.&rdquo;<br><br>
-    <b>Story complete — free roam unlocked.</b> The city, its cars and its cops remain.</div>
-  <button id="btn-complete-ok" class="btn">KEEP ROAMING</button>
+<div class="screen" id="complete-screen" style="display:none">
+  <h2>MISSION COMPLETE</h2>
+  <div class="big-note" id="complete-text"></div>
+  <div class="btns"><button id="btn-complete-ok">CONTINUE</button></div>
 </div>
 
 <script src="vendor/three.min.js"></script>

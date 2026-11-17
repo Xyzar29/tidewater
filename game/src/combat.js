@@ -1,247 +1,290 @@
-// Combat: fists on F / click, and a pistol on Q — draw it, click to fire
-// a hitscan shot with a tracer and muzzle flash, R to reload. Rival-crew
-// gunmen (spawned by the warehouse mission) keep their distance, strafe
-// and shoot back. Gunfire and violence feed the wanted system, throttled
-// so a long firefight tops out instead of pegging the meter instantly.
+// combat.js — fists, the pistol, and the people shooting back.
+//
+// Q draws or holsters the pistol. Clicking fires it: a hitscan ray from the
+// camera through the crosshair, with a tracer and a muzzle flash so the
+// shot reads on screen. F (or clicking unarmed) throws a punch. Rival
+// gunmen — spawned by missions — keep their distance, strafe, and fire
+// back in tracers of their own. Everything that bleeds goes through
+// damagePlayer / the enemy hp pool so missions can count the bodies.
 
-import { buildFigure, animateFigure, hurtPed, scarePeds } from './pedestrians.js';
-import { hurtPlayer } from './player.js';
-import { collideCircle } from './city.js';
-import { clamp, dist2 } from './random.js';
+import { PISTOL_MAG, PISTOL_RESERVE_START, CRIMES } from './config.js';
+import { makePerson, animatePerson, scarePeds } from './pedestrians.js';
+import { addHeat } from './police.js';
 
-export function createCombat(G) {
-  const gun = new THREE.Mesh(
-    new THREE.BoxGeometry(0.09, 0.14, 0.42),
-    new THREE.MeshLambertMaterial({ color: 0x1c1e22 })
-  );
-  gun.position.set(0.37, 0.92, 0.28);
-  gun.visible = false;
-  G.player.mesh.add(gun);
+const PISTOL_DMG = 40;
+const ENEMY_HP = 80;
 
-  const flash = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 6, 6),
-    new THREE.MeshBasicMaterial({ color: 0xffcf5e, transparent: true, opacity: 0.95 })
-  );
+export function initCombat(G) {
+  G.combat = {
+    drawn: false, mag: PISTOL_MAG, reserve: PISTOL_RESERVE_START,
+    reloadingUntil: 0, lastShotAt: -9, meleeAt: -9,
+  };
+  G.enemies = [];
+  G.tracers = []; // {line, until}
+
+  // The muzzle flash: a little additive star that blinks at the gun.
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffcf6e, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const flash = new THREE.Mesh(new THREE.OctahedronGeometry(0.34), flashMat);
   flash.visible = false;
   G.scene.add(flash);
+  G.muzzle = { mesh: flash, mat: flashMat, until: 0, at: new THREE.Vector3() };
 
-  const combat = {
-    gun, flash, flashT: 0,
-    drawn: false, ammo: 12, reserve: 72, magSize: 12,
-    reloadT: 0, cooldown: 0, meleeT: 0, crimeT: 0,
-    gunmen: [], tracers: [],
+  // The pistol itself: a small dark shape in Mari's right hand, visible
+  // only while drawn, so screenshots and players can see she is armed.
+  const gun = new THREE.Mesh(
+    new THREE.BoxGeometry(0.09, 0.16, 0.42),
+    new THREE.MeshLambertMaterial({ color: 0x17181c })
+  );
+  gun.position.set(0.31, 1.22, 0.3);
+  gun.visible = false;
+  G.player.mesh.add(gun);
+  G.gunMesh = gun;
+}
 
-    toggleDraw() {
-      this.drawn = !this.drawn;
-      gun.visible = this.drawn;
-      G.hud.hint(this.drawn ? 'Click to shoot · R reload · Q holster' : '');
-    },
-    addAmmo(n) { this.reserve += n; },
+export function spawnEnemy(G, x, z) {
+  const mesh = makePerson(0x30303a, 0x1e1e26, 0x8a5a3b, 0x111111);
+  mesh.position.set(x, 0.1, z);
+  G.scene.add(mesh);
+  const e = {
+    mesh, x, z, heading: G.rng.range(0, 6.28), hp: ENEMY_HP,
+    dead: false, shootAt: G.time + G.rng.range(1.2, 2.6),
+    strafeDir: G.rng.sign(), phase: G.rng.range(0, 6), removeAt: 0,
   };
-  G.combat = combat;
-  return combat;
+  G.enemies.push(e);
+  return e;
 }
 
-function reportViolence(G, kind) {
-  if (G.time - G.combat.crimeT > 2.5) {
-    G.combat.crimeT = G.time;
-    G.police.reportCrime(kind, G.player.x, G.player.z);
-  }
+export function clearEnemies(G) {
+  for (const e of G.enemies) G.scene.remove(e.mesh);
+  G.enemies = [];
 }
 
-function addTracer(G, from, to, color) {
-  const geo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(from.x, from.y, from.z),
-    new THREE.Vector3(to.x, to.y, to.z),
-  ]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+function gunPos(G, out) {
+  const p = G.player;
+  out.set(p.x + Math.sin(p.heading) * 0.45, 1.38, p.z + Math.cos(p.heading) * 0.45);
+  return out;
+}
+
+const _from = new THREE.Vector3();
+const _to = new THREE.Vector3();
+function addTracer(G, from, to, colour) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+    color: colour, transparent: true, opacity: 0.9,
+  }));
   G.scene.add(line);
-  G.combat.tracers.push({ line, life: 0.07 });
+  G.tracers.push({ line, until: G.time + 0.09 });
 }
 
-export function tryMelee(G) {
-  const c = G.combat, p = G.player;
-  if (c.meleeT > 0 || p.driving) return;
-  c.meleeT = 0.38;
-  G.audio.punch();
-  const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
-  let hit = false;
-  const inFront = (x, z) => {
-    const dx = x - p.x, dz = z - p.z;
-    return dx * fx + dz * fz > 0.2 && dx * dx + dz * dz < 5.3;
-  };
-  for (const ped of G.peds) {
-    if (!ped.dead && inFront(ped.x, ped.z)) { hurtPed(G, ped, 34); hit = true; }
-  }
-  for (const gm of c.gunmen) {
-    if (!gm.dead && inFront(gm.x, gm.z)) { hurtGunman(G, gm, 34); hit = true; }
-  }
-  if (hit) {
-    reportViolence(G, 'melee');
-    scarePeds(G, p.x, p.z, 7);
+function showMuzzle(G, at) {
+  G.muzzle.at.copy(at);
+  G.muzzle.mesh.position.copy(at);
+  G.muzzle.mesh.visible = true;
+  G.muzzle.mat.opacity = 0.95;
+  G.muzzle.until = G.time + 0.055;
+}
+
+export function damagePlayer(G, amt) {
+  const p = G.player;
+  if (G.state !== 'playing') return;
+  if (p.inCar) amt *= 0.55;
+  p.hp -= amt;
+  p.flash = 0.4;
+  if (p.hp <= 0) {
+    p.hp = 0;
+    if (G.onWasted) G.onWasted();
   }
 }
 
-export function tryShoot(G) {
-  const c = G.combat, p = G.player;
-  if (!c.drawn || p.driving || c.cooldown > 0 || c.reloadT > 0) return;
-  if (c.ammo <= 0) {
-    G.hud.notify('Out of ammo — R to reload');
-    c.cooldown = 0.3;
+// One enemy takes a shot at the player. Also used by shots.js to stage a
+// visible tracer in the mission screenshot.
+export function enemyShoot(G, e) {
+  const p = G.player;
+  _from.set(e.x + Math.sin(e.heading) * 0.4, 1.35, e.z + Math.cos(e.heading) * 0.4);
+  const spread = 0.9;
+  _to.set(
+    p.x + G.rng.range(-spread, spread),
+    1.2 + G.rng.range(-0.3, 0.3),
+    p.z + G.rng.range(-spread, spread)
+  );
+  addTracer(G, _from, _to, 0xff9d5c);
+  showMuzzle(G, _from);
+  if (G.audio) G.audio.shot(true);
+  const dist = Math.hypot(p.x - e.x, p.z - e.z);
+  const hitChance = Math.max(0.12, 0.62 - dist * 0.012);
+  if (G.rng.chance(hitChance)) damagePlayer(G, G.rng.range(5, 10));
+}
+
+function playerShoot(G) {
+  const c = G.combat;
+  const p = G.player;
+  if (c.mag <= 0) {
+    if (G.audio) G.audio.click();
+    c.lastShotAt = G.time;
     return;
   }
-  c.ammo--;
-  c.cooldown = 0.24;
-  G.audio.shot();
+  c.mag--;
+  c.lastShotAt = G.time;
+  if (G.audio) G.audio.shot(false);
   scarePeds(G, p.x, p.z, 26);
-  reportViolence(G, 'gunshot');
+  addHeat(G, CRIMES.gunshot);
 
-  // Aim: the camera's forward ray; the closest body it passes near wins.
+  // Ray from the camera, through the crosshair.
   const cam = G.camera;
-  const origin = cam.position.clone();
   const dir = new THREE.Vector3();
   cam.getWorldDirection(dir);
-  const hand = new THREE.Vector3(p.x, G.city.groundY(p.x, p.z) + 1.15, p.z);
-  let bestT = 70, bestPoint = null, bestTarget = null;
-  const consider = (x, y, z, radius, target) => {
-    const vx = x - origin.x, vy = y - origin.y, vz = z - origin.z;
-    const t = vx * dir.x + vy * dir.y + vz * dir.z;
-    if (t < 1 || t > 70) return;
-    const px = origin.x + dir.x * t, py = origin.y + dir.y * t, pz = origin.z + dir.z * t;
-    const perp = Math.hypot(x - px, y - py, z - pz);
-    if (perp < radius && t < bestT) {
-      bestT = t; bestTarget = target;
-      bestPoint = { x, y, z };
+  const origin = cam.position.clone();
+  gunPos(G, _from);
+  showMuzzle(G, _from);
+
+  let bestT = 70, bestEnemy = null, bestPed = null;
+  const test = (x, y, z) => {
+    // Distance from the point to the ray; the ray parameter of the closest point.
+    const ox = x - origin.x, oy = y - origin.y, oz = z - origin.z;
+    const t = ox * dir.x + oy * dir.y + oz * dir.z;
+    if (t < 1 || t > 70) return -1;
+    const px = origin.x + dir.x * t - x, py = origin.y + dir.y * t - y, pz = origin.z + dir.z * t - z;
+    const d2 = px * px + py * py + pz * pz;
+    return d2 < 1.1 ? t : -1;
+  };
+  for (const e of G.enemies) {
+    if (e.dead) continue;
+    const t = test(e.x, 1.15, e.z);
+    if (t > 0 && t < bestT) { bestT = t; bestEnemy = e; bestPed = null; }
+  }
+  if (!bestEnemy) {
+    for (const ped of G.peds) {
+      if (ped.dead) continue;
+      const t = test(ped.x, 1.1, ped.z);
+      if (t > 0 && t < bestT) { bestT = t; bestPed = ped; bestEnemy = null; }
     }
-  };
-  for (const gm of c.gunmen) {
-    if (!gm.dead) consider(gm.x, G.city.groundY(gm.x, gm.z) + 1.15, gm.z, 0.95, { kind: 'gunman', ref: gm });
   }
-  for (const ped of G.peds) {
-    if (!ped.dead) consider(ped.x, G.city.groundY(ped.x, ped.z) + 1.15, ped.z, 0.85, { kind: 'ped', ref: ped });
+  _to.copy(origin).addScaledVector(dir, bestT);
+  addTracer(G, _from, _to, 0xffe9a8);
+
+  if (bestEnemy) {
+    bestEnemy.hp -= PISTOL_DMG;
+    addHeat(G, CRIMES.shotHit);
+    if (bestEnemy.hp <= 0 && !bestEnemy.dead) {
+      bestEnemy.dead = true;
+      bestEnemy.removeAt = G.time + 7;
+      bestEnemy.mesh.rotation.x = -Math.PI / 2;
+      bestEnemy.mesh.position.y = 0.25;
+      if (G.onEnemyDown) G.onEnemyDown(bestEnemy);
+    }
+  } else if (bestPed) {
+    bestPed.dead = true;
+    bestPed.mesh.rotation.x = -Math.PI / 2;
+    bestPed.mesh.position.y = 0.25;
+    addHeat(G, CRIMES.shotHit + 20);
+    if (G.onPedHit) G.onPedHit(bestPed, null);
   }
-  for (const car of G.cars) {
-    if (!car.dead) consider(car.x, 0.9, car.z, 2.3, { kind: 'car', ref: car });
-  }
-  const end = bestPoint || {
-    x: origin.x + dir.x * 60, y: Math.max(0.3, origin.y + dir.y * 60), z: origin.z + dir.z * 60,
-  };
-  addTracer(G, hand, end, 0xffe9a3);
-  c.flash.position.set(hand.x + Math.sin(p.heading) * 0.5, hand.y + 0.05, hand.z + Math.cos(p.heading) * 0.5);
-  c.flash.visible = true;
-  c.flashT = 0.045;
-  if (bestTarget) {
-    if (bestTarget.kind === 'gunman') hurtGunman(G, bestTarget.ref, 26);
-    else if (bestTarget.kind === 'ped') { hurtPed(G, bestTarget.ref, 26); reportViolence(G, 'gunshot'); }
-  }
-  if (c.ammo === 0 && c.reserve > 0) startReload(G);
 }
 
-export function startReload(G) {
+function playerMelee(G) {
   const c = G.combat;
-  if (c.reloadT > 0 || c.ammo >= c.magSize || c.reserve <= 0) return;
-  c.reloadT = 1.1;
-  G.hud.notify('Reloading…');
-}
-
-export function spawnGunman(G, x, z) {
-  const mesh = buildFigure(0x8e2f32, 0x1c1c22, 0xc98d5e);
-  mesh.position.set(x, G.city.groundY(x, z), z);
-  G.scene.add(mesh);
-  const gm = {
-    mesh, x, z, heading: 0, health: 60, dead: false,
-    shootT: G.rng.range(0.8, 2), strafeDir: G.rng.sign(), phase: G.rng.range(0, 6),
-    fallT: 0,
+  c.meleeAt = G.time;
+  if (G.audio) G.audio.punch();
+  const p = G.player;
+  const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+  let hit = false;
+  const inArc = (x, z) => {
+    const dx = x - p.x, dz = z - p.z;
+    const d = Math.hypot(dx, dz);
+    return d < 2.3 && (dx * fx + dz * fz) / (d || 1) > 0.4;
   };
-  G.combat.gunmen.push(gm);
-  return gm;
-}
-
-export function hurtGunman(G, gm, dmg) {
-  if (gm.dead) return;
-  gm.health -= dmg;
-  if (gm.health <= 0) {
-    gm.dead = true;
-    gm.fallT = 8;
-    gm.mesh.rotation.x = -Math.PI / 2;
-    gm.mesh.position.y = G.city.groundY(gm.x, gm.z) + 0.25;
-    if (G.missions) G.missions.onGunmanDown(gm);
+  for (const e of G.enemies) {
+    if (!e.dead && inArc(e.x, e.z)) {
+      e.hp -= 26; hit = true;
+      if (e.hp <= 0) {
+        e.dead = true; e.removeAt = G.time + 7;
+        e.mesh.rotation.x = -Math.PI / 2; e.mesh.position.y = 0.25;
+        if (G.onEnemyDown) G.onEnemyDown(e);
+      }
+    }
   }
-}
-
-export function clearGunmen(G) {
-  for (const gm of G.combat.gunmen) G.scene.remove(gm.mesh);
-  G.combat.gunmen.length = 0;
+  if (!hit) {
+    for (const ped of G.peds) {
+      if (!ped.dead && inArc(ped.x, ped.z)) {
+        ped.mode = 'flee'; ped.fleeFrom = { x: p.x, z: p.z }; ped.fleeUntil = G.time + 3;
+        hit = true;
+      }
+    }
+  }
+  if (hit) addHeat(G, CRIMES.melee);
 }
 
 export function updateCombat(G, dt) {
-  const c = G.combat, p = G.player;
-  c.cooldown = Math.max(0, c.cooldown - dt);
-  c.meleeT = Math.max(0, c.meleeT - dt);
-  if (c.flashT > 0) { c.flashT -= dt; if (c.flashT <= 0) c.flash.visible = false; }
-  if (c.reloadT > 0) {
-    c.reloadT -= dt;
-    if (c.reloadT <= 0) {
-      const take = Math.min(c.magSize - c.ammo, c.reserve);
-      c.ammo += take; c.reserve -= take;
-    }
+  const c = G.combat;
+  const p = G.player;
+
+  // Draw / holster.
+  if (G.pressed['KeyQ'] && !p.inCar) {
+    c.drawn = !c.drawn;
+    if (G.audio) G.audio.click();
   }
-  // Swing Mari's right arm while a punch is in flight.
-  const arm = p.mesh.userData.parts.armR;
-  if (arm) arm.rotation.x = c.meleeT > 0.18 ? -1.9 : arm.rotation.x;
-  if (c.drawn && !p.driving) {
-    const parts = p.mesh.userData.parts;
-    if (parts) parts.armR.rotation.x = -1.35; // pistol arm stays raised
+  if (p.inCar) c.drawn = false;
+  if (G.gunMesh) G.gunMesh.visible = c.drawn && !p.inCar;
+
+  // Reload completion.
+  if (c.reloadingUntil && G.time >= c.reloadingUntil) {
+    const take = Math.min(PISTOL_MAG - c.mag, c.reserve);
+    c.mag += take; c.reserve -= take;
+    c.reloadingUntil = 0;
+  }
+  if (G.pressed['KeyR'] && c.drawn && !c.reloadingUntil && c.mag < PISTOL_MAG && c.reserve > 0) {
+    c.reloadingUntil = G.time + 1.15;
+    if (G.audio) G.audio.click();
   }
 
-  for (let i = c.tracers.length - 1; i >= 0; i--) {
-    const tr = c.tracers[i];
-    tr.life -= dt;
-    tr.line.material.opacity = Math.max(0, tr.life / 0.07) * 0.9;
-    if (tr.life <= 0) {
-      G.scene.remove(tr.line);
-      tr.line.geometry.dispose();
-      c.tracers.splice(i, 1);
-    }
+  // Fire / punch. G.shotPressed is a one-frame edge set by main.js on click.
+  if (G.shotPressed && !p.inCar && G.time - c.lastShotAt > 0.16) {
+    if (c.drawn) { if (!c.reloadingUntil) playerShoot(G); }
+    else if (G.time - c.meleeAt > 0.3) playerMelee(G);
   }
+  if (G.pressed['KeyF'] && !p.inCar && G.time - c.meleeAt > 0.3) playerMelee(G);
 
-  // Rival gunmen: hold a 9–17 m band, strafe, fire on a ragged rhythm.
-  for (const gm of c.gunmen) {
-    if (gm.dead) {
-      gm.fallT -= dt;
-      if (gm.fallT <= 0) gm.mesh.visible = false;
+  // Enemies: keep a firing distance, strafe, shoot back.
+  for (let i = G.enemies.length - 1; i >= 0; i--) {
+    const e = G.enemies[i];
+    if (e.dead) {
+      if (G.time > e.removeAt) { G.scene.remove(e.mesh); G.enemies.splice(i, 1); }
       continue;
     }
-    const dx = p.x - gm.x, dz = p.z - gm.z;
-    const d = Math.hypot(dx, dz) || 1;
-    const ux = dx / d, uz = dz / d;
-    let mx = 0, mz = 0, speed = 0;
-    if (d > 17) { mx = ux; mz = uz; speed = 3.6; }
-    else if (d < 8) { mx = -ux; mz = -uz; speed = 2.6; }
+    const dx = p.x - e.x, dz = p.z - e.z;
+    const dist = Math.hypot(dx, dz);
+    e.heading = Math.atan2(dx, dz);
+    let mx = 0, mz = 0;
+    if (dist > 17) { mx = dx / dist; mz = dz / dist; }
+    else if (dist < 8) { mx = -dx / dist; mz = -dz / dist; }
     else {
-      mx = -uz * gm.strafeDir; mz = ux * gm.strafeDir; speed = 1.6;
-      if (G.rng.chance(dt * 0.25)) gm.strafeDir *= -1;
+      mx = (dz / dist) * e.strafeDir; mz = (-dx / dist) * e.strafeDir;
+      if (G.rng.chance(0.004)) e.strafeDir *= -1;
     }
-    gm.x += mx * speed * dt;
-    gm.z += mz * speed * dt;
-    const [nx, nz] = collideCircle(G.city, gm.x, gm.z, 0.5);
-    gm.x = clamp(nx, -266, 266); gm.z = clamp(nz, -266, 258);
-    gm.heading = Math.atan2(dx, dz);
-    gm.phase += dt * speed * 3.2;
-    gm.mesh.position.set(gm.x, G.city.groundY(gm.x, gm.z), gm.z);
-    gm.mesh.rotation.y = gm.heading;
-    animateFigure(gm.mesh, gm.phase, 0);
-
-    gm.shootT -= dt;
-    if (gm.shootT <= 0 && d < 30 && G.state === 'playing') {
-      gm.shootT = G.rng.range(1.3, 2.3);
-      G.audio.shot();
-      const from = { x: gm.x, y: G.city.groundY(gm.x, gm.z) + 1.3, z: gm.z };
-      const to = { x: p.x, y: G.city.groundY(p.x, p.z) + 1.1, z: p.z };
-      addTracer(G, from, to, 0xff9a7a);
-      const hitChance = clamp(0.62 - d * 0.016, 0.12, 0.55);
-      if (!p.driving && G.rng.chance(hitChance)) hurtPlayer(G, G.rng.range(5, 10));
-      else if (p.driving && G.rng.chance(hitChance * 0.6)) hurtPlayer(G, G.rng.range(3, 7));
+    const spd = 2.6;
+    e.x += mx * spd * dt;
+    e.z += mz * spd * dt;
+    e.phase += dt * spd * 3.2;
+    e.mesh.position.x = e.x;
+    e.mesh.position.z = e.z;
+    e.mesh.rotation.y = e.heading;
+    animatePerson(e.mesh, e.phase, 0.9);
+    if (dist < 36 && G.time >= e.shootAt && G.state === 'playing') {
+      e.shootAt = G.time + G.rng.range(1.5, 2.7);
+      enemyShoot(G, e);
     }
   }
+
+  // Tracers fade; muzzle flash blinks out.
+  for (let i = G.tracers.length - 1; i >= 0; i--) {
+    if (G.time > G.tracers[i].until) {
+      G.scene.remove(G.tracers[i].line);
+      G.tracers[i].line.geometry.dispose();
+      G.tracers.splice(i, 1);
+    }
+  }
+  if (G.muzzle.mesh.visible && G.time > G.muzzle.until) G.muzzle.mesh.visible = false;
 }

@@ -1,34 +1,39 @@
-// localStorage persistence: money, story progress and where Mari was
-// standing. Deliberately tiny and defensive — a corrupt or missing save
-// must never stop the game from booting.
+// save.js — the localStorage save: money, story progress, position.
+//
+// One JSON blob under one key. Written whenever something worth keeping
+// changes (mission complete, cash pickup, busted/wasted fines), read once
+// at boot to offer Continue on the title screen. Corrupt or missing data
+// is simply "no save" — the game must never fail to start over a bad blob.
 
-const KEY = 'tidewater-save-v1';
+import { SAVE_KEY } from './config.js';
 
 export function loadSave() {
   try {
-    const raw = window.localStorage.getItem(KEY);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (typeof data !== 'object' || data === null) return null;
-    if (typeof data.money !== 'number' || typeof data.missionsDone !== 'number') return null;
+    if (!data || typeof data.money !== 'number' || typeof data.next !== 'number') return null;
     return data;
-  } catch (err) {
+  } catch (e) {
     return null;
   }
 }
 
-export function writeSave(data) {
+export function storeSave(G) {
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(data));
-  } catch (err) {
-    /* storage blocked or full: play on without persisting */
-  }
+    const p = G.player;
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      money: G.money,
+      next: G.progress.next,
+      done: G.progress.done,
+      x: Math.round(G.playerPos.x),
+      z: Math.round(G.playerPos.z),
+      mag: G.combat.mag,
+      reserve: G.combat.reserve,
+    }));
+  } catch (e) { /* private mode etc. — saving is a courtesy, not a promise */ }
 }
 
 export function clearSave() {
-  try {
-    window.localStorage.removeItem(KEY);
-  } catch (err) {
-    /* nothing to clear */
-  }
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ }
 }

@@ -1,156 +1,151 @@
-// The PSPD: a heat-based wanted system. Crimes add heat; heat maps to
-// 0–5 stars; patrol cars spawn at the city edge of the player's view,
-// pursue and ram; the BUSTED meter fills while the player is stopped
-// near an officer. Stay out of sight and the heat bleeds away star by
-// star until the chase is called off.
+// police.js — the Port Serena PD: wanted heat, pursuit, and the bust.
+//
+// Heat is a single 0–500 meter; every 100 points shows as a star. Crimes
+// (reported through addHeat) raise it. Cruisers spawn on roads a few
+// blocks away, hunt by pure pursuit with a little prediction, and try to
+// ram or box Mari in. If she is stopped with a cruiser close, the BUSTED
+// meter fills. Break line of sight — no cruiser near — and heat bleeds
+// away star by star until the slate is clean.
 
-import { WORLD } from './config.js';
-import { spawnCar, removeCar, driveCar, steerToward } from './vehicles.js';
-import { clamp } from './random.js';
+import {
+  HEAT_PER_STAR, MAX_STARS, HEAT_DECAY_PER_SEC, HEAT_DECAY_DELAY,
+  BUST_TIME, MAX_POLICE, AVENUES, STREETS,
+} from './config.js';
+import { createCar, removeCar } from './vehicles.js';
 
-const { lines } = WORLD;
-const HEAT_FOR_STARS = [0, 40, 110, 200, 320, 470];
-const CRIME_HEAT = {
-  theft: 55, crash: 16, hitandrun: 130, gunshot: 70,
-  melee: 45, robbery: 260, mission: 90,
-};
+const COPS_BY_STARS = [0, 1, 2, 3, 4, 6];
 
-export function createPolice(G) {
-  const police = {
-    heat: 0, stars: 0, floor: 0,
-    unseenT: 0, bustedMeter: 0, spawnT: 0, flashT: 0,
-    cars: [],
+export function initPolice(G) {
+  G.wanted = { heat: 0, stars: 0, unseenFor: 99, busted: 0 };
+  G.policeCars = [];
+}
 
-    reportCrime(kind, x, z) {
-      const add = CRIME_HEAT[kind] || 20;
-      this.heat = Math.min(560, this.heat + add);
-      this.unseenT = 0;
-    },
-    setStarsAtLeast(n) {
-      this.heat = Math.max(this.heat, HEAT_FOR_STARS[n] || 0);
-    },
-    setFloor(n) { this.floor = n; },
-    clear() {
-      this.heat = 0; this.floor = 0; this.bustedMeter = 0;
-    },
-    desiredCops() {
-      if (this.stars === 0) return 0;
-      return Math.min(2 + this.stars, 6);
-    },
-  };
-  G.police = police;
-  return police;
+export function starsForHeat(heat) {
+  if (heat <= 0) return 0;
+  return Math.min(MAX_STARS, Math.ceil(heat / HEAT_PER_STAR));
+}
+
+// Report a crime. Witnessed crimes also reset the "unseen" clock.
+export function addHeat(G, pts, witnessed = true) {
+  const w = G.wanted;
+  w.heat = Math.max(0, Math.min(MAX_STARS * HEAT_PER_STAR, w.heat + pts));
+  w.stars = starsForHeat(w.heat);
+  if (witnessed) w.unseenFor = 0;
+}
+
+// Scripted heat for missions: exactly N stars, no more, no less.
+export function setWanted(G, stars) {
+  const w = G.wanted;
+  w.heat = stars <= 0 ? 0 : (stars - 1) * HEAT_PER_STAR + 50;
+  w.stars = starsForHeat(w.heat);
+  w.unseenFor = 0;
+  w.busted = 0;
 }
 
 function spawnCop(G) {
-  const p = G.player;
-  // Pick an intersection 70–110 m away: close enough to matter, far
-  // enough to feel like a response rather than a teleport.
-  let spot = null;
-  for (let tries = 0; tries < 12 && !spot; tries++) {
-    const lx = G.rng.pick(lines), lz = G.rng.pick(lines);
-    const d = Math.hypot(lx - p.x, lz - p.z);
-    if (d > 65 && d < 115) spot = { x: lx, z: lz };
+  const p = G.playerPos;
+  // Pick a road point 70–120 m from the player.
+  for (let tries = 0; tries < 12; tries++) {
+    const onAve = G.rng.chance(0.5);
+    const coord = onAve ? G.rng.pick(AVENUES) : G.rng.pick(STREETS);
+    const along = (onAve ? p.z : p.x) + G.rng.range(70, 120) * G.rng.sign();
+    const x = onAve ? coord : Math.max(-290, Math.min(290, along));
+    const z = onAve ? Math.max(-290, Math.min(290, along)) : coord;
+    if (Math.hypot(x - p.x, z - p.z) < 55) continue;
+    const heading = Math.atan2(p.x - x, p.z - z);
+    const car = createCar(G, 'police', 0x1d2733, x, z, heading, 'police');
+    car.ai = { mode: 'pursue' };
+    G.policeCars.push(car);
+    return car;
   }
-  if (!spot) spot = { x: lines[0], z: lines[0] };
-  const car = spawnCar(G, {
-    type: 'police', color: 0xf2f0eb, x: spot.x, z: spot.z,
-    heading: Math.atan2(p.x - spot.x, p.z - spot.z), kind: 'police',
-  });
-  car.occupant = 'ai';
-  G.police.cars.push(car);
-  return car;
+  return null;
 }
 
 export function updatePolice(G, dt) {
-  const pol = G.police;
-  const p = G.player;
+  const w = G.wanted;
+  const p = G.playerPos;
+  const playerSpeed = G.player.inCar ? Math.abs(G.player.inCar.speed) : 0;
 
-  // Stars from heat, respecting the mission floor.
-  let stars = 0;
-  for (let i = 5; i >= 1; i--) if (pol.heat >= HEAT_FOR_STARS[i]) { stars = i; break; }
-  pol.stars = Math.max(stars, pol.floor);
-
-  // Are we seen? Any active patrol within 55 m counts.
-  let nearestCop = Infinity;
-  for (const car of pol.cars) {
-    if (car.dead) continue;
-    const d = Math.hypot(car.x - p.x, car.z - p.z);
-    if (d < nearestCop) nearestCop = d;
+  // Sight: any active cruiser within 60 m keeps the heat fresh.
+  let nearest = Infinity;
+  for (const cop of G.policeCars) {
+    const d = Math.hypot(cop.x - p.x, cop.z - p.z);
+    if (d < nearest) nearest = d;
   }
-  const seen = pol.stars > 0 && nearestCop < 55;
-  if (seen) pol.unseenT = 0;
-  else pol.unseenT += dt;
-  if (pol.unseenT > 4 && pol.floor === 0) {
-    pol.heat = Math.max(0, pol.heat - 13 * dt);
+  if (nearest < 60 || w.stars === 0) w.unseenFor = 0;
+  else w.unseenFor += dt;
+
+  // Decay once she's been unseen for a while.
+  if (w.heat > 0 && w.unseenFor > HEAT_DECAY_DELAY) {
+    w.heat = Math.max(0, w.heat - HEAT_DECAY_PER_SEC * dt);
+    w.stars = starsForHeat(w.heat);
   }
 
-  // Spawn / retire patrols.
-  pol.spawnT -= dt;
-  const alive = pol.cars.filter((c) => !c.dead);
-  pol.cars = alive;
-  if (pol.stars > 0 && alive.length < pol.desiredCops() && pol.spawnT <= 0) {
-    spawnCop(G);
-    pol.spawnT = 1.1;
+  // Keep the fleet at the size the stars demand.
+  const want = COPS_BY_STARS[w.stars] || 0;
+  if (G.policeCars.length < want) spawnCop(G);
+  for (let i = G.policeCars.length - 1; i >= 0; i--) {
+    const cop = G.policeCars[i];
+    if (cop.driver === 'player') { G.policeCars.splice(i, 1); continue; } // she stole it!
+    if (G.policeCars.length > want || Math.hypot(cop.x - p.x, cop.z - p.z) > 260) {
+      removeCar(G, cop);
+      G.policeCars.splice(i, 1);
+    }
   }
 
-  pol.flashT += dt;
-  const flashPhase = Math.floor(pol.flashT * 2.4) % 2 === 0;
-  let sirenNear = false;
-
-  for (const car of pol.cars) {
-    const bar = car.mesh.userData.lightBar;
-    if (bar) {
-      bar.red.material.color.setHex(flashPhase ? 0xff2a2a : 0x661111);
-      bar.blue.material.color.setHex(flashPhase ? 0x112266 : 0x2a5aff);
-    }
-    const d = Math.hypot(car.x - p.x, car.z - p.z);
-    if (d < 75 && pol.stars > 0) sirenNear = true;
-    if (pol.stars === 0) {
-      // Chase called off: drive away and despawn once distant.
-      if (d > 130) { removeCar(G, car); continue; }
-      const away = { x: car.x + (car.x - p.x), z: car.z + (car.z - p.z) };
-      driveCar(G, car, dt, steerToward(car, away.x, away.z, dt));
-      continue;
-    }
-    if (d > 240) {
-      // Fallen too far behind: re-stage at the edge of the action.
-      const lx = G.rng.pick(lines), lz = G.rng.pick(lines);
-      if (Math.hypot(lx - p.x, lz - p.z) > 60) {
-        car.x = lx; car.z = lz; car.speed = 0;
-        car.mesh.position.set(car.x, 0, car.z);
-      }
-      continue;
-    }
-    // Pursuit: aim where the player will be, not where they are.
+  // Pursuit driving.
+  for (const cop of G.policeCars) {
+    if (cop.dead || !cop.ai || cop.ai.mode === 'staged') continue;
+    // Predict a touch ahead of the player's motion.
     let tx = p.x, tz = p.z;
-    if (p.driving) {
-      tx += Math.sin(p.car.heading) * p.car.speed * 0.45;
-      tz += Math.cos(p.car.heading) * p.car.speed * 0.45;
+    if (G.player.inCar) {
+      const c = G.player.inCar;
+      tx += Math.sin(c.heading) * c.speed * 0.45;
+      tz += Math.cos(c.heading) * c.speed * 0.45;
     }
-    const input = steerToward(car, tx, tz, dt, { slowNear: 6 });
-    driveCar(G, car, dt, input);
-  }
-  pol.cars = pol.cars.filter((c) => !c.dead);
-  G.audio.siren(sirenNear && G.state === 'playing');
+    const dist = Math.hypot(tx - cop.x, tz - cop.z);
+    const desired = Math.atan2(tx - cop.x, tz - cop.z);
+    let diff = desired - cop.heading;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    cop.input.steer = Math.max(-1, Math.min(1, diff * 2.2));
 
-  // BUSTED meter: stopped (or on foot and cornered) with police close.
-  const playerSlow = p.driving ? Math.abs(p.car.speed) < 2.2 : !anyMoveKey(G);
-  if (pol.stars > 0 && playerSlow && nearestCop < 13) {
-    pol.bustedMeter += dt / 2.8;
-    if (pol.bustedMeter >= 1) {
-      pol.bustedMeter = 0;
-      G.onBusted();
-    }
+    let wantSpeed = dist > 42 ? 34 : 27;
+    // When she's stopped, pull up alongside instead of ramming forever.
+    if (dist < 9 && playerSpeed < 1.5) wantSpeed = 0;
+    else if (dist < 5) wantSpeed = Math.min(wantSpeed, 8);
+    cop.input.throttle = cop.speed < wantSpeed ? 1 : 0;
+    cop.input.brake = cop.speed > wantSpeed + 2 || (wantSpeed === 0 && cop.speed > 0.5);
+  }
+
+  // Lightbars: alternate red/blue strobe.
+  const phase = Math.floor(G.time * 5) % 2;
+  G.policeCars.forEach((cop, i) => {
+    const u = cop.mesh.userData;
+    if (!u.barL) return;
+    const on = (phase + i) % 2 === 0;
+    u.barL.color.setHex(on ? 0xff2a2a : 0x571111);
+    u.barR.color.setHex(on ? 0x11408f : 0x2a6bff);
+  });
+
+  // The bust: stopped, with a cruiser close, and the meter fills.
+  const stopped = G.player.inCar ? playerSpeed < 1.2 : true;
+  const onFootStill = !G.player.inCar && !(G.keys['KeyW'] || G.keys['KeyA'] || G.keys['KeyS'] || G.keys['KeyD']);
+  if (w.stars > 0 && nearest < 10.5 && (G.player.inCar ? stopped : onFootStill)) {
+    w.busted = Math.min(1, w.busted + dt / BUST_TIME);
+    if (w.busted >= 1 && G.onBusted) G.onBusted();
   } else {
-    pol.bustedMeter = Math.max(0, pol.bustedMeter - dt * 1.4);
+    w.busted = Math.max(0, w.busted - dt * 1.4);
   }
+
+  if (G.audio) G.audio.siren(w.stars > 0 && G.policeCars.length > 0);
 }
 
-function anyMoveKey(G) {
-  const k = G.input.keys;
-  return k.has('KeyW') || k.has('KeyA') || k.has('KeyS') || k.has('KeyD');
+// Clear the slate (busted, wasted, safehouse, mission scripts).
+export function clearWanted(G) {
+  setWanted(G, 0);
+  for (let i = G.policeCars.length - 1; i >= 0; i--) {
+    if (G.policeCars[i].driver !== 'player') removeCar(G, G.policeCars[i]);
+  }
+  G.policeCars = G.policeCars.filter((c) => c.driver === 'player');
 }
-
-export function wantedStars(G) { return G.police.stars; }
-export { clamp };

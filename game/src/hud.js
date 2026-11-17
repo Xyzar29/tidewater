@@ -1,107 +1,138 @@
-// DOM HUD: health bar, cash, wanted stars, the objective panel with its
-// countdown, centre banners for mission titles, toast notifications, the
-// dialogue box, the BUSTED meter and the crosshair. Missions and systems
-// talk to this module; it owns all of the DOM ids from index.html.
+// hud.js — everything drawn over the 3D view.
+//
+// Reads game state, writes DOM — but only when something actually changed,
+// so the HUD costs nothing on a quiet frame. Owns the notification stack
+// (top-centre toasts), the dialogue box (a small queue of lines, each held
+// for a few seconds), the BUSTED meter, the damage vignette and the
+// contextual control hint at the bottom of the screen.
 
-export function createHud(G) {
+import { districtAt } from './city.js';
+
+export function initHUD(G) {
   const el = (id) => document.getElementById(id);
-  const dom = {
-    health: el('health-fill'), money: el('money'), stars: el('stars'),
-    objective: el('objective'), objText: el('obj-text'), objTimer: el('obj-timer'),
-    banner: el('banner'), hint: el('hint'), ammo: el('ammo'),
-    dialogue: el('dialogue'), dlgName: el('dlg-name'), dlgText: el('dlg-text'),
-    notify: el('notify'), bustedWrap: el('busted-wrap'), bustedFill: el('busted-fill'),
-    crosshair: el('crosshair'), district: el('district'),
+  G.hud = {
+    health: el('health-fill'), district: el('district'), money: el('money'),
+    stars: el('stars'), objective: el('objective'), timer: el('objective-timer'),
+    notifyBox: el('notify'), dialogue: el('dialogue'),
+    dlgSpeaker: el('dialogue-speaker'), dlgText: el('dialogue-text'),
+    hint: el('hint'), ammo: el('ammo'), busted: el('busted'),
+    bustedFill: el('busted-fill'), dmg: el('dmg'), crosshair: el('crosshair'),
+    lastMoney: -1, lastStars: -1, lastHealth: -1, lastDistrict: '',
+    lastObjective: '', lastHint: '', lastAmmo: '',
+    notes: [], dlgQueue: [], dlgUntil: 0,
   };
-  let notifyT = 0, bannerT = 0, dialogueT = 0, hintT = 0;
-  let lastMoney = null, lastStars = -1, lastHealth = -1, lastAmmo = '';
 
-  const hud = {
-    dom,
-    objectiveText: '',
-    objectiveTime: null, // seconds remaining, or null for no countdown
-
-    setObjective(text, timeLeft) {
-      this.objectiveText = text;
-      this.objectiveTime = timeLeft;
-    },
-    notify(text) {
-      dom.notify.textContent = text;
-      dom.notify.style.opacity = '1';
-      notifyT = 3.2;
-    },
-    banner(text, seconds = 2.6) {
-      dom.banner.textContent = text;
-      dom.banner.style.opacity = '1';
-      bannerT = seconds;
-    },
-    dialogue(name, text, seconds = 4.5) {
-      dom.dlgName.textContent = name;
-      dom.dlgText.textContent = text;
-      dom.dialogue.style.opacity = '1';
-      dialogueT = seconds;
-    },
-    hint(text, seconds = 0) {
-      dom.hint.textContent = text;
-      dom.hint.style.opacity = text ? '1' : '0';
-      hintT = seconds;
-    },
-    setDistrict(name) {
-      if (dom.district.textContent !== name) dom.district.textContent = name;
-    },
-
-    update(dt) {
-      const p = G.player;
-      // Health / money / stars only touch the DOM when they change.
-      const hp = Math.max(0, Math.round(p.health));
-      if (hp !== lastHealth) {
-        lastHealth = hp;
-        dom.health.style.width = hp + '%';
-        dom.health.style.background = hp > 35 ? '#57d95e' : '#e0483e';
-      }
-      if (G.money !== lastMoney) {
-        lastMoney = G.money;
-        dom.money.textContent = '$' + G.money.toLocaleString('en-US');
-      }
-      const stars = G.police ? G.police.stars : 0;
-      if (stars !== lastStars) {
-        lastStars = stars;
-        dom.stars.textContent = '★★★★★'.slice(0, stars) + '☆☆☆☆☆'.slice(0, 5 - stars);
-        dom.stars.style.opacity = stars > 0 ? '1' : '0.25';
-      }
-      // Objective panel.
-      if (this.objectiveText) {
-        dom.objective.style.opacity = '1';
-        if (dom.objText.textContent !== this.objectiveText) dom.objText.textContent = this.objectiveText;
-        if (this.objectiveTime !== null && this.objectiveTime !== undefined) {
-          const s = Math.max(0, Math.ceil(this.objectiveTime));
-          dom.objTimer.textContent = '⏱ ' + s + 's';
-          dom.objTimer.style.color = s <= 10 ? '#ff7a6b' : '#ffd75e';
-        } else dom.objTimer.textContent = '';
-      } else dom.objective.style.opacity = '0';
-      // Ammo readout while the pistol is out.
-      const c = G.combat;
-      if (c && c.drawn && !p.driving) {
-        const label = c.reloadT > 0 ? 'RELOADING' : `PISTOL ${c.ammo} / ${c.reserve}`;
-        if (label !== lastAmmo) { lastAmmo = label; dom.ammo.textContent = label; }
-        dom.ammo.style.opacity = '1';
-        dom.crosshair.style.opacity = '1';
-      } else {
-        dom.ammo.style.opacity = '0';
-        dom.crosshair.style.opacity = '0';
-        lastAmmo = '';
-      }
-      // BUSTED meter.
-      const bm = G.police ? G.police.bustedMeter : 0;
-      dom.bustedWrap.style.opacity = bm > 0.02 ? '1' : '0';
-      if (bm > 0.02) dom.bustedFill.style.width = Math.round(bm * 100) + '%';
-      // Timed elements fade themselves out.
-      if (notifyT > 0) { notifyT -= dt; if (notifyT <= 0) dom.notify.style.opacity = '0'; }
-      if (bannerT > 0) { bannerT -= dt; if (bannerT <= 0) dom.banner.style.opacity = '0'; }
-      if (dialogueT > 0) { dialogueT -= dt; if (dialogueT <= 0) dom.dialogue.style.opacity = '0'; }
-      if (hintT > 0) { hintT -= dt; if (hintT <= 0) dom.hint.style.opacity = '0'; }
-    },
+  G.notify = (text) => {
+    const h = G.hud;
+    const div = document.createElement('div');
+    div.className = 'note';
+    div.textContent = text;
+    h.notifyBox.appendChild(div);
+    h.notes.push({ div, until: G.time + 3.8 });
+    while (h.notes.length > 4) {
+      const old = h.notes.shift();
+      old.div.remove();
+    }
   };
-  G.hud = hud;
-  return hud;
+
+  // Queue a conversation: lines of [speaker, text], each held ~3.6 s.
+  G.showDialogue = (lines) => {
+    for (const [speaker, text] of lines) G.hud.dlgQueue.push({ speaker, text });
+  };
+}
+
+export function updateHUD(G) {
+  const h = G.hud;
+  if (!h.health) return;
+  const p = G.player;
+
+  const hp = Math.max(0, Math.round(p.hp));
+  if (hp !== h.lastHealth) {
+    h.lastHealth = hp;
+    h.health.style.width = hp + '%';
+    h.health.style.background = hp > 50 ? '#58d977' : hp > 25 ? '#ffb84d' : '#ff5a5a';
+  }
+
+  if (G.money !== h.lastMoney) {
+    h.lastMoney = G.money;
+    h.money.textContent = '$' + G.money.toLocaleString('en-US');
+  }
+
+  const stars = G.wanted.stars;
+  if (stars !== h.lastStars) {
+    h.lastStars = stars;
+    h.stars.textContent = '★★★★★'.slice(0, stars) + '☆☆☆☆☆'.slice(0, 5 - stars);
+    h.stars.style.opacity = stars > 0 ? '1' : '0.28';
+  }
+
+  const d = districtAt(G.playerPos.x, G.playerPos.z);
+  if (d !== h.lastDistrict) {
+    h.lastDistrict = d;
+    h.district.textContent = d;
+  }
+
+  if (G.objectiveText !== h.lastObjective) {
+    h.lastObjective = G.objectiveText;
+    h.objective.textContent = G.objectiveText;
+  }
+  if (G.objectiveTimer !== null && G.objectiveTimer !== undefined) {
+    const s = Math.max(0, Math.ceil(G.objectiveTimer));
+    h.timer.textContent = '⏱ ' + s + 's';
+    h.timer.style.color = s < 15 ? '#ff7b7b' : '#ffd166';
+    h.timer.style.display = '';
+  } else h.timer.style.display = 'none';
+
+  // Notifications expire.
+  for (let i = h.notes.length - 1; i >= 0; i--) {
+    if (G.time > h.notes[i].until) {
+      h.notes[i].div.remove();
+      h.notes.splice(i, 1);
+    }
+  }
+
+  // Dialogue queue.
+  if (G.time > h.dlgUntil && h.dlgQueue.length > 0) {
+    const line = h.dlgQueue.shift();
+    h.dlgSpeaker.textContent = line.speaker;
+    h.dlgText.textContent = line.text;
+    h.dialogue.style.display = '';
+    h.dlgUntil = G.time + 3.6;
+  } else if (G.time > h.dlgUntil && h.dlgQueue.length === 0) {
+    h.dialogue.style.display = 'none';
+  }
+
+  // Ammo, only while the pistol is out.
+  let ammoText = '';
+  if (G.combat.drawn && !p.inCar) {
+    ammoText = G.combat.reloadingUntil ? 'PISTOL — RELOADING…'
+      : `PISTOL ${G.combat.mag} / ${G.combat.reserve}`;
+  }
+  if (ammoText !== h.lastAmmo) {
+    h.lastAmmo = ammoText;
+    h.ammo.textContent = ammoText;
+    h.ammo.style.display = ammoText ? '' : 'none';
+  }
+  h.crosshair.style.display = (G.state === 'playing' && !p.inCar) ? '' : 'none';
+
+  // BUSTED meter.
+  const b = G.wanted.busted;
+  h.busted.style.display = b > 0.02 ? '' : 'none';
+  if (b > 0.02) h.bustedFill.style.width = Math.round(b * 100) + '%';
+
+  // Damage vignette follows the flash timer set by combat.
+  h.dmg.style.opacity = p.flash > 0 ? String(Math.min(0.55, p.flash)) : '0';
+
+  // Contextual hint.
+  let hint = '';
+  if (G.state === 'playing') {
+    if (p.inCar) hint = 'W A S D drive · Space brake · E exit';
+    else if (G.nearCar) hint = 'E — get in the ' + G.nearCar.type;
+    else if (G.combat.drawn) hint = 'Click to shoot · R reload · Q holster';
+    else hint = 'W A S D move · Shift run · F melee · Q draw pistol · E enter car';
+  }
+  if (hint !== h.lastHint) {
+    h.lastHint = hint;
+    h.hint.textContent = hint;
+    h.hint.style.display = hint ? '' : 'none';
+  }
 }
