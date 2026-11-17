@@ -1,6 +1,8 @@
-// TIDEWATER — seeded RNG (mulberry32) so ?seed=N worlds are reproducible.
+// Seeded RNG (mulberry32) plus small math helpers. The whole city is
+// generated from one seed so a given ?seed=N always builds the same
+// Port Serena — the screenshot scenes and playtests rely on that.
 
-export function createRNG(seed) {
+export function makeRng(seed) {
   let a = (seed >>> 0) || 1;
   function next() {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -10,15 +12,24 @@ export function createRNG(seed) {
   }
   return {
     next,
-    range(min, max) { return min + next() * (max - min); },
-    int(min, max) { return Math.floor(min + next() * (max - min + 1)); },
-    pick(arr) { return arr[Math.floor(next() * arr.length)]; },
+    range(lo, hi) { return lo + (hi - lo) * next(); },
+    int(lo, hi) { return Math.floor(lo + (hi - lo + 1) * next()); },
+    pick(arr) { return arr[Math.floor(next() * arr.length) % arr.length]; },
     chance(p) { return next() < p; },
+    sign() { return next() < 0.5 ? -1 : 1; },
   };
 }
 
-export function parseSeed() {
-  const q = new URLSearchParams(location.search);
-  const s = parseInt(q.get('seed') || '1', 10);
-  return Number.isFinite(s) ? s : 1;
+export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist2(ax, az, bx, bz) {
+  const dx = ax - bx, dz = az - bz;
+  return dx * dx + dz * dz;
+}
+// Shortest signed angular difference, for steering.
+export function angDiff(a, b) {
+  let d = (a - b) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }

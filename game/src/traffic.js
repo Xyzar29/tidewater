@@ -1,88 +1,146 @@
-// TIDEWATER — traffic AI: lane following on the road grid, parked cars.
+// Traffic AI: cars follow the intersection graph in the right-hand lane,
+// brake for whatever is ahead of them, sometimes pause at junctions, and
+// quietly respawn far away so the streets near the player stay alive.
+// Parked cars line the kerbs and landmark lots — all of them stealable.
 
-import { CITY, WORLD } from './config.js';
-import { roadX, roadZ, collide } from './city.js';
-import { createCarMesh, makeCarState, pickBodyColor, stepCar, syncCarMesh } from './vehicles.js';
+import { WORLD, TUNE, CAR_TYPES, CAR_COLORS } from './config.js';
+import { spawnCar, driveCar, steerToward } from './vehicles.js';
+import { clamp } from './random.js';
 
-const LANE = 3;
+const { lines } = WORLD;
+const LANE = 3.6;
 
-export class TrafficSystem {
-  constructor(scene, rng, colliders) {
-    this.cars = []; this.parked = []; this.colliders = colliders;
-    const kinds = ['sedan', 'sedan', 'hatch', 'van'];
-    for (let i = 0; i < WORLD.trafficCap; i++) {
-      const horiz = rng.chance(0.5);
-      const laneIdx = rng.int(0, (horiz ? CITY.gridZ : CITY.gridX) - 1);
-      const along = rng.range(-110, 110);
-      const dir = rng.chance(0.5) ? 1 : -1;
-      let x, z, heading;
-      if (horiz) { z = roadZ(laneIdx) + dir * LANE; x = along; heading = dir > 0 ? Math.PI / 2 : -Math.PI / 2; }
-      else { x = roadX(laneIdx) + dir * LANE; z = along; heading = dir > 0 ? 0 : Math.PI; }
-      const kind = rng.pick(kinds);
-      const s = makeCarState(x, z, heading, kind);
-      s.ai = { horiz, laneIdx, dir, cruise: rng.range(8, 13), pause: 0 };
-      s.mesh = createCarMesh(kind, pickBodyColor(rng));
-      scene.add(s.mesh); syncCarMesh(s);
-      this.cars.push(s);
-    }
-    // parked cars along streets (stealable)
-    for (let i = 0; i < 14; i++) {
-      const horiz = rng.chance(0.5);
-      const laneIdx = rng.int(0, (horiz ? CITY.gridZ : CITY.gridX) - 1);
-      const along = rng.range(-110, 110);
-      let x, z, heading;
-      if (horiz) { z = roadZ(laneIdx) + 5.2; x = along; heading = Math.PI / 2; }
-      else { x = roadX(laneIdx) + 5.2; z = along; heading = 0; }
-      const kind = rng.pick(kinds);
-      const s = makeCarState(x, z, heading, kind);
-      s.parked = true;
-      s.mesh = createCarMesh(kind, pickBodyColor(rng));
-      scene.add(s.mesh); syncCarMesh(s);
-      this.parked.push(s); this.cars.push(s);
-    }
-    // the yellow sports car at the beachfront hotel
-    this.sportCar = makeCarState(roadX(4) + 8, roadZ(5) - 12, Math.PI / 2, 'sport');
-    this.sportCar.parked = true; this.sportCar.isSport = true;
-    this.sportCar.mesh = createCarMesh('sport', 0xffd21f);
-    scene.add(this.sportCar.mesh); syncCarMesh(this.sportCar);
-    this.parked.push(this.sportCar); this.cars.push(this.sportCar);
+function neighbours(node) {
+  const out = [];
+  const i = lines.indexOf(node.x), j = lines.indexOf(node.z);
+  if (i > 0) out.push({ x: lines[i - 1], z: node.z });
+  if (i < lines.length - 1) out.push({ x: lines[i + 1], z: node.z });
+  if (j > 0) out.push({ x: node.x, z: lines[j - 1] });
+  if (j < lines.length - 1) out.push({ x: node.x, z: lines[j + 1] });
+  return out;
+}
+
+function pickNext(G, car) {
+  const from = car.ai.from, at = car.ai.to;
+  const options = neighbours(at).filter((n) => !(n.x === from.x && n.z === from.z));
+  let next;
+  const straight = options.find((n) => Math.sign(n.x - at.x) === Math.sign(at.x - from.x)
+    && Math.sign(n.z - at.z) === Math.sign(at.z - from.z));
+  if (straight && G.rng.chance(0.62)) next = straight;
+  else next = G.rng.pick(options.length ? options : neighbours(at));
+  car.ai.from = at;
+  car.ai.to = next;
+  if (G.rng.chance(0.22)) car.ai.pauseT = G.rng.range(0.5, 1.4);
+}
+
+function lanePoint(car, node) {
+  const from = car.ai.from;
+  const fx = Math.sign(node.x - from.x), fz = Math.sign(node.z - from.z);
+  // right-hand lane offset for travel from -> node
+  return { x: node.x + (-fz) * LANE, z: node.z + fx * LANE };
+}
+
+export function createTraffic(G) {
+  const rng = G.rng;
+  for (let i = 0; i < TUNE.trafficCount; i++) {
+    const a = { x: rng.pick(lines), z: rng.pick(lines) };
+    const b = rng.pick(neighbours(a));
+    const t = rng.range(0.15, 0.85);
+    const fx = Math.sign(b.x - a.x), fz = Math.sign(b.z - a.z);
+    const x = a.x + (b.x - a.x) * t + (-fz) * LANE;
+    const z = a.z + (b.z - a.z) * t + fx * LANE;
+    const type = rng.pick(['sedan', 'sedan', 'hatch', 'hatch', 'van']);
+    const car = spawnCar(G, {
+      type, color: rng.pick(CAR_COLORS), x, z,
+      heading: Math.atan2(fx, fz), kind: 'traffic',
+    });
+    car.occupant = 'ai';
+    car.ai.from = a; car.ai.to = b; car.ai.pauseT = 0;
+    car.ai.cruise = rng.range(9, 12.5);
   }
+  // Parked cars: kerbside along random roads, plus the landmark lots.
+  for (let i = 0; i < TUNE.parkedCount; i++) {
+    const vertical = rng.chance(0.5);
+    const line = rng.pick(lines);
+    const along = rng.range(-250, 225);
+    const side = rng.sign();
+    const x = vertical ? line + side * (WORLD.roadHalf - 1.1) : along;
+    const z = vertical ? along : line + side * (WORLD.roadHalf - 1.1);
+    const heading = vertical ? (side > 0 ? Math.PI : 0) : (side > 0 ? -Math.PI / 2 : Math.PI / 2);
+    spawnCar(G, {
+      type: rng.pick(['sedan', 'hatch', 'van', 'sedan']),
+      color: rng.pick(CAR_COLORS), x, z, heading, kind: 'parked',
+    });
+  }
+  void CAR_TYPES;
+}
 
-  allCars() { return this.cars; }
+function obstacleAhead(G, car) {
+  const fx = Math.sin(car.heading), fz = Math.cos(car.heading);
+  let nearest = Infinity;
+  for (const other of G.cars) {
+    if (other === car || other.dead) continue;
+    const dx = other.x - car.x, dz = other.z - car.z;
+    const fwd = dx * fx + dz * fz;
+    if (fwd < 0.5 || fwd > 11) continue;
+    const lat = Math.abs(dx * fz - dz * fx);
+    if (lat < 2.3 && fwd < nearest) nearest = fwd;
+  }
+  // A pedestrian (or Mari on foot) in the road counts too.
+  const p = G.player;
+  if (p && !p.driving) {
+    const dx = p.x - car.x, dz = p.z - car.z;
+    const fwd = dx * fx + dz * fz;
+    const lat = Math.abs(dx * fz - dz * fx);
+    if (fwd > 0 && fwd < 8 && lat < 2 && fwd < nearest) nearest = fwd;
+  }
+  return nearest;
+}
 
-  update(dt, playerPos) {
-    for (const s of this.cars) {
-      if (s.parked || s.isPlayerCar || s.disabled) { syncCarMesh(s); continue; }
-      const ai = s.ai; if (!ai) continue;
-      // slow for car ahead
-      let throttle = 1, target = ai.cruise;
-      for (const o of this.cars) {
-        if (o === s) continue;
-        const dx = o.x - s.x, dz = o.z - s.z;
-        const fwd = dx * Math.sin(s.heading) + dz * Math.cos(s.heading);
-        const lat = Math.abs(dx * Math.cos(s.heading) - dz * Math.sin(s.heading));
-        if (fwd > 0 && fwd < 9 && lat < 2.2) { target = Math.min(target, Math.max(0, o.speed)); if (fwd < 5) target = 0; }
-      }
-      if (playerPos) {
-        const dx = playerPos.x - s.x, dz = playerPos.z - s.z;
-        if (dx * dx + dz * dz < 36) target = Math.min(target, 4);
-      }
-      if (ai.pause > 0) { ai.pause -= dt; target = 0; }
-      const thr = s.speed < target ? 0.7 : (s.speed > target + 1 ? -0.4 : 0);
-      stepCar(s, thr, 0, dt);
-      s.speed = Math.min(s.speed, Math.max(target, 0) + 2);
-      // turn at world edge: flip direction (U-turn onto opposite lane)
-      const lim = 118;
-      if (Math.abs(s.x) > lim || Math.abs(s.z) > lim) {
-        ai.dir *= -1;
-        if (ai.horiz) { s.z = roadZ(ai.laneIdx) + ai.dir * LANE; s.heading = ai.dir > 0 ? Math.PI / 2 : -Math.PI / 2; s.x = Math.max(-lim, Math.min(lim, s.x)); }
-        else { s.x = roadX(ai.laneIdx) + ai.dir * LANE; s.heading = ai.dir > 0 ? 0 : Math.PI; s.z = Math.max(-lim, Math.min(lim, s.z)); }
-        ai.pause = 0.4;
-      }
-      // keep on lane centre gently
-      if (ai.horiz) s.z += (roadZ(ai.laneIdx) + ai.dir * LANE - s.z) * Math.min(1, dt * 2);
-      else s.x += (roadX(ai.laneIdx) + ai.dir * LANE - s.x) * Math.min(1, dt * 2);
-      syncCarMesh(s);
+// A traffic car the player has abandoned rejoins the flow from the
+// nearest intersection instead of freezing where it was left.
+export function resumeTraffic(G, car) {
+  let best = null, bestD = Infinity;
+  for (const lx of lines) for (const lz of lines) {
+    const d = (car.x - lx) * (car.x - lx) + (car.z - lz) * (car.z - lz);
+    if (d < bestD) { bestD = d; best = { x: lx, z: lz }; }
+  }
+  car.ai.from = best;
+  car.ai.to = G.rng.pick(neighbours(best));
+  car.ai.pauseT = 0.6;
+  car.occupant = 'ai';
+}
+
+export function updateTraffic(G, dt) {
+  const px = G.player ? G.player.x : 0, pz = G.player ? G.player.z : 0;
+  for (const car of G.cars) {
+    if (car.kind !== 'traffic' || car.occupant !== 'ai' || car.dead) continue;
+    // Far-away traffic teleports to an edge nearer the player.
+    const dxp = car.x - px, dzp = car.z - pz;
+    if (dxp * dxp + dzp * dzp > 300 * 300) {
+      const a = { x: G.rng.pick(lines), z: G.rng.pick(lines) };
+      const b = G.rng.pick(neighbours(a));
+      car.ai.from = a; car.ai.to = b;
+      car.x = a.x; car.z = a.z;
+      car.heading = Math.atan2(b.x - a.x, b.z - a.z);
+      car.speed = 0;
     }
+    if (car.ai.pauseT > 0) {
+      car.ai.pauseT -= dt;
+      driveCar(G, car, dt, { throttle: 0, steer: 0, brake: car.speed > 0.3 });
+      continue;
+    }
+    const target = lanePoint(car, car.ai.to);
+    const distNode = Math.hypot(car.ai.to.x - car.x, car.ai.to.z - car.z);
+    if (distNode < 8) pickNext(G, car);
+    const input = steerToward(car, target.x, target.z, dt);
+    const obstacle = obstacleAhead(G, car);
+    if (obstacle < 6) { input.throttle = 0; input.brake = car.speed > 0.5; }
+    else if (obstacle < 11) input.throttle = Math.min(input.throttle, 0.25);
+    const speedCap = car.ai.cruise / car.spec.topSpeed;
+    if (car.speed > car.ai.cruise) input.throttle = 0;
+    void speedCap;
+    driveCar(G, car, dt, input);
+    void clamp;
   }
 }

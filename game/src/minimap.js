@@ -1,44 +1,101 @@
-// TIDEWATER — canvas minimap: roads, player arrow, police blips, markers.
+// Canvas minimap: north-up, player-centred, ~240 m across. Roads and the
+// shoreline are drawn from the same grid constants as the 3D city, then
+// blips: traffic as pale dots, police flashing red/blue, gunmen dark red,
+// cash pickups gold, and the mission target as a gold diamond that clamps
+// to the rim when it is off-screen. The player is a white arrow.
 
-import { CITY } from './config.js';
-import { roadX, roadZ } from './city.js';
+import { WORLD } from './config.js';
 
-export function drawMinimap(canvas, view) {
+const { lines, roadHalf, beachZ, seaZ } = WORLD;
+const SIZE = 184;
+const RANGE = 240; // metres across the map
+const SCALE = SIZE / RANGE;
+
+export function createMinimap(G) {
+  const canvas = document.getElementById('minimap');
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const range = 130; // world metres shown across the map
-  const scale = W / (range * 2);
-  const cx = W / 2, cy = H / 2;
-  ctx.fillStyle = '#20313d'; ctx.fillRect(0, 0, W, H);
-  const toMap = (x, z) => [cx + (x - view.player.x) * scale, cy + (z - view.player.z) * scale];
-  // beach / sea band
-  ctx.fillStyle = '#2e86ab';
-  const seaY = cy + (118 - view.player.z) * scale;
-  if (seaY < H) ctx.fillRect(0, Math.max(0, seaY), W, H);
-  // roads
-  ctx.strokeStyle = '#8b95a1'; ctx.lineWidth = Math.max(2, CITY.roadWidth * scale * 0.7);
-  for (let i = 0; i < CITY.gridX; i++) { const [x] = toMap(roadX(i), 0); ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let j = 0; j < CITY.gridZ; j++) { const [, y] = toMap(0, roadZ(j)); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-  // traffic dots
-  ctx.fillStyle = '#cfd6dd';
-  for (const c of view.traffic || []) { const [x, y] = toMap(c.x, c.z); if (x > -4 && x < W + 4 && y > -4 && y < H + 4) ctx.fillRect(x - 1.5, y - 1.5, 3, 3); }
-  // mission marker
-  if (view.marker) {
-    const [x, y] = toMap(view.marker.x, view.marker.z);
-    ctx.fillStyle = '#ffd21f'; ctx.beginPath(); ctx.arc(Math.max(6, Math.min(W - 6, x)), Math.max(6, Math.min(H - 6, y)), 5, 0, 7); ctx.fill();
-    ctx.fillStyle = '#173f5f'; ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('!', Math.max(6, Math.min(W - 6, x)), Math.max(6, Math.min(H - 6, y)) + 3);
+  const p = G.player;
+
+  function toMap(x, z) {
+    return [
+      SIZE / 2 + (x - p.x) * SCALE,
+      SIZE / 2 + (z - p.z) * SCALE,
+    ];
   }
-  // police blips flash red/blue
-  const flash = Math.floor(performance.now() / 350) % 2 === 0;
-  for (const c of view.police || []) {
-    const [x, y] = toMap(c.x, c.z);
-    if (x < -6 || x > W + 6 || y < -6 || y > H + 6) continue;
-    ctx.fillStyle = flash ? '#ff3355' : '#3388ff';
-    ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill();
+  function dot(x, z, r, color) {
+    const [mx, my] = toMap(x, z);
+    if (mx < -6 || my < -6 || mx > SIZE + 6 || my > SIZE + 6) return;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(mx, my, r, 0, Math.PI * 2);
+    ctx.fill();
   }
-  // player arrow
-  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-view.heading + Math.PI);
-  ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6); ctx.closePath(); ctx.fill();
-  ctx.restore();
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, W - 2, H - 2);
+
+  function draw() {
+    ctx.fillStyle = '#232b33';
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Sea and sand along the south.
+    const [, sandY] = toMap(0, beachZ);
+    const [, seaY] = toMap(0, seaZ);
+    if (seaY < SIZE) {
+      ctx.fillStyle = '#e8d29a';
+      ctx.fillRect(0, Math.max(0, sandY), SIZE, Math.max(0, seaY - sandY));
+      ctx.fillStyle = '#2e7fa8';
+      ctx.fillRect(0, Math.max(0, seaY), SIZE, SIZE);
+    }
+    // Roads.
+    ctx.strokeStyle = '#59616b';
+    ctx.lineWidth = roadHalf * 2 * SCALE;
+    ctx.beginPath();
+    for (const l of lines) {
+      const [vx] = toMap(l, 0);
+      if (vx > -20 && vx < SIZE + 20) { ctx.moveTo(vx, 0); ctx.lineTo(vx, SIZE); }
+      const [, hy] = toMap(0, l);
+      if (hy > -20 && hy < SIZE + 20) { ctx.moveTo(0, hy); ctx.lineTo(SIZE, hy); }
+    }
+    ctx.stroke();
+
+    for (const pk of G.city.pickups) if (!pk.taken) dot(pk.x, pk.z, 2, '#ffd23e');
+    for (const car of G.cars) {
+      if (car.dead || car.occupant === 'player') continue;
+      if (car.kind === 'traffic') dot(car.x, car.z, 1.6, 'rgba(240,240,240,0.65)');
+    }
+    if (G.combat) for (const gm of G.combat.gunmen) if (!gm.dead) dot(gm.x, gm.z, 2.4, '#c0392b');
+    if (G.police) {
+      const flash = Math.floor(G.time * 2.4) % 2 === 0;
+      for (const car of G.police.cars) {
+        if (!car.dead) dot(car.x, car.z, 2.8, flash ? '#ff4040' : '#4d7dff');
+      }
+    }
+    // Mission target, clamped to the rim.
+    const target = G.missions ? G.missions.target : null;
+    if (target) {
+      let [mx, my] = toMap(target.x, target.z);
+      mx = Math.max(10, Math.min(SIZE - 10, mx));
+      my = Math.max(10, Math.min(SIZE - 10, my));
+      ctx.fillStyle = '#ffd23e';
+      ctx.save();
+      ctx.translate(mx, my);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillRect(-5, -5, 10, 10);
+      ctx.restore();
+    }
+    // Player arrow. Canvas y grows southward like world +z, and the
+    // triangle is drawn pointing up, so the rotation is PI - heading.
+    ctx.save();
+    ctx.translate(SIZE / 2, SIZE / 2);
+    ctx.rotate(Math.PI - p.heading);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(0, -7); ctx.lineTo(4.6, 5); ctx.lineTo(0, 2.4); ctx.lineTo(-4.6, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // Frame.
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, SIZE - 2, SIZE - 2);
+  }
+
+  return { draw };
 }

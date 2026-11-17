@@ -1,257 +1,368 @@
-// TIDEWATER — the six-mission story of Mari Vega and fixer Dario Fuentes.
-// Detective Ruth Calloway voices the Port Serena PD pressure between jobs.
+// The story: six jobs for fixer Dario Fuentes, from a first courier run
+// to the cash-van score that ends the arc. Between jobs the next start
+// marker glows across town; during a job a stage machine drives the
+// objective text, the countdown, the beacon and the minimap target.
+// Failing (or getting busted / wasted) cleans the stage props up and
+// leaves the job available to retry.
 
-import { MISSION_REWARDS } from './config.js';
-import { createCarMesh, makeCarState, syncCarMesh } from './vehicles.js';
+import { LANDMARKS } from './config.js';
+import { spawnCar, removeCar } from './vehicles.js';
+import { spawnGunman, clearGunmen } from './combat.js';
+import { teleport } from './player.js';
+import { dist2 } from './random.js';
 
+const L = LANDMARKS;
+const STARTS = [
+  { x: -184, z: -56 },   // 1 First Run — outside the garage
+  { x: -46, z: 188 },    // 2 Hot Wheels — the Serena Hotel forecourt
+  { x: 188, z: 112 },    // 3 Night Deposit — the docks
+  { x: 184, z: 222 },    // 4 Harbor Lights — the marina
+  { x: 220, z: 62 },     // 5 Cold Trail — the warehouse yard
+  { x: 66, z: -180 },    // 6 Last Tide — outside the casino
+];
 export const MISSION_DEFS = [
-  {
-    name: 'First Run', startAt: 'garage',
-    intro: [
-      ['Dario Fuentes', 'Mari. Simple job: this package goes to the marina. Fast, clean, no questions.'],
-      ['Mari Vega', 'Courier work. Sure, Dario. I was never much for questions.'],
-    ],
-    objective: 'Drive the package to the marina',
-  },
-  {
-    name: 'Hot Wheels', startAt: 'garage',
-    intro: [
-      ['Dario Fuentes', 'A yellow sports car sits outside the Serena Hotel. My client wants it. So do I.'],
-      ['Mari Vega', 'Stealing cars now. My resume just gets better.'],
-      ['Det. Ruth Calloway', 'Port Serena PD is watching the beachfront tonight. Tread carefully.'],
-    ],
-    objective: 'Steal the yellow sports car at the Serena Hotel',
-  },
-  {
-    name: 'Night Deposit', startAt: 'garage',
-    intro: [
-      ['Dario Fuentes', 'Three cash bags were left at the docks. Pick them up, lose the heat, come home.'],
-      ['Mari Vega', 'And if the heat finds me first?'],
-      ['Dario Fuentes', 'Then drive like the tide is chasing you.'],
-    ],
-    objective: 'Collect the cash bags at the docks (0/3)',
-  },
-  {
-    name: 'Harbor Lights', startAt: 'marina',
-    intro: [
-      ['Dario Fuentes', 'My drivers swear nobody can run all six harbor lights in time. Prove them wrong.'],
-      ['Mari Vega', 'Six checkpoints. One city. Watch me.'],
-    ],
-    objective: 'Hit checkpoint 1 of 6',
-  },
-  {
-    name: 'Cold Trail', startAt: 'warehouse',
-    intro: [
-      ['Dario Fuentes', 'A rival crew is holding my briefcase at the warehouse. Go on foot. Go ready.'],
-      ['Mari Vega', 'Four of them, one of me. I like those odds better than rent day.'],
-    ],
-    objective: 'Clear the rival crew at the warehouse',
-  },
-  {
-    name: 'Last Tide', startAt: 'casino',
-    intro: [
-      ['Dario Fuentes', 'Last job, Mari. The armoured cash van at the casino. Take it, shake Calloway, reach my boat.'],
-      ['Det. Ruth Calloway', 'Vega! Whatever you are planning — this city is mine tonight.'],
-      ['Mari Vega', 'Then come and take it back, Detective.'],
-    ],
-    objective: 'Rob the armoured cash van at the casino',
-  },
+  { title: 'First Run', reward: 300 },
+  { title: 'Hot Wheels', reward: 450 },
+  { title: 'Night Deposit', reward: 600 },
+  { title: 'Harbor Lights', reward: 500 },
+  { title: 'Cold Trail', reward: 750 },
+  { title: 'Last Tide', reward: 1200 },
 ];
 
-export class MissionSystem {
-  constructor(scene, landmarks, hud, audio) {
-    this.scene = scene; this.L = landmarks; this.hud = hud; this.audio = audio;
-    this.nextIndex = 0; this.active = null; this.stage = 0;
-    this.timer = -1; this.collected = 0; this.checkpoint = 0; this.channel = 0;
-    this.dialogueQueue = []; this.dialogueT = 0; this.finishedAll = false;
-    // beacon marker
-    const geo = new THREE.CylinderGeometry(1.6, 1.6, 14, 12, 1, true);
-    this.beacon = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffd21f, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }));
-    this.beacon.position.y = 7; scene.add(this.beacon);
-    this.pickups = [];
-    this.van = null;
-  }
-  // Interaction points sit on the street in FRONT of each landmark —
-  // the building centres themselves are inside their own colliders.
-  front(name) { const L = this.L[name]; return { x: L.x, z: L.z + 13 }; }
-  startPos() {
-    if (this.nextIndex >= MISSION_DEFS.length) return null;
-    return this.front(MISSION_DEFS[this.nextIndex].startAt);
-  }
-  markerPos() {
-    if (this.active) return this.activeTarget;
-    return this.startPos();
-  }
-  queueDialogue(lines) { this.dialogueQueue = lines.slice(); this.dialogueT = 0; if (this.dialogueQueue.length) { const [n, t] = this.dialogueQueue[0]; this.hud.showDialogue(n, t); } }
+export function createMissions(G) {
+  // The objective beacon: a column of gold light with a ground ring.
+  const beacon = new THREE.Group();
+  const column = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.5, 1.5, 34, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xffd23e, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false })
+  );
+  column.position.y = 17;
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(1.7, 2.3, 24),
+    new THREE.MeshBasicMaterial({ color: 0xffd23e, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.15;
+  beacon.add(column, ring);
+  G.scene.add(beacon);
 
-  startMission(ctx) {
-    const def = MISSION_DEFS[this.nextIndex];
-    this.active = def; this.stage = 0; this.collected = 0; this.checkpoint = 0; this.channel = 0;
-    this.queueDialogue(def.intro);
-    this.hud.notify('MISSION: ' + def.name, 4000);
-    this.setupStage(ctx);
-  }
-  setupStage(ctx) {
-    const L = this.L; const idx = this.nextIndex;
-    this.clearPickups();
-    if (idx === 0) { this.activeTarget = this.front('marina'); this.timer = 100; }
-    if (idx === 1) { this.activeTarget = ctx.traffic.sportCar; this.timer = -1; }
-    if (idx === 2) {
-      this.activeTarget = null; this.timer = -1;
-      const spots = [{ x: L.marina.x - 14, z: L.marina.z + 10 }, { x: L.marina.x + 6, z: L.marina.z + 22 }, { x: L.marina.x - 26, z: L.marina.z - 4 }];
-      for (const s of spots) this.addPickup(s.x, s.z, 0x59d977);
-    }
-    if (idx === 3) { this.checkpoints = this.makeCheckpoints(); this.activeTarget = this.checkpoints[0]; this.timer = 160; }
-    if (idx === 4) {
-      this.activeTarget = { x: L.warehouse.x, z: L.warehouse.z };
-      if (ctx.combat.enemies.length === 0) {
-        ctx.combat.spawnEnemy(L.warehouse.x + 6, L.warehouse.z + 4);
-        ctx.combat.spawnEnemy(L.warehouse.x - 7, L.warehouse.z - 3);
-        ctx.combat.spawnEnemy(L.warehouse.x + 3, L.warehouse.z - 8);
-        ctx.combat.spawnEnemy(L.warehouse.x - 4, L.warehouse.z + 8);
+  const missions = {
+    done: 0,
+    current: null,   // { index, stage, timer, data }
+    target: null,    // {x, z} for minimap + beacon
+    beacon,
+    onGunmanDown(gm) {
+      const cur = this.current;
+      if (cur && cur.index === 4 && cur.stage === 0) {
+        cur.data.remaining--;
+        if (cur.data.remaining <= 0) this.advance(1);
       }
-      this.timer = -1;
+      void gm;
+    },
+    startMission(i) { begin(G, i); },
+    abort() { cleanup(G); this.current = null; },
+    update(dt) { update(G, dt); },
+  };
+  G.missions = missions;
+  return missions;
+}
+
+function setTarget(G, x, z) {
+  G.missions.target = { x, z };
+  const b = G.missions.beacon;
+  b.visible = true;
+  b.position.set(x, G.city.groundY(x, z), z);
+}
+
+function hideTarget(G) {
+  G.missions.target = null;
+  G.missions.beacon.visible = false;
+}
+
+function cleanup(G) {
+  const cur = G.missions.current;
+  if (!cur) return;
+  const d = cur.data;
+  if (d.props) for (const mesh of d.props) G.scene.remove(mesh);
+  if (d.cars) for (const car of d.cars) if (!car.dead && G.player.driving !== car) removeCar(G, car);
+  if (cur.index === 4) clearGunmen(G);
+  G.police.setFloor(0);
+  hideTarget(G);
+  G.hud.setObjective('', null);
+}
+
+function complete(G) {
+  const cur = G.missions.current;
+  const def = MISSION_DEFS[cur.index];
+  cleanup(G);
+  G.missions.current = null;
+  G.missions.done = cur.index + 1;
+  G.money += def.reward;
+  G.audio.success();
+  G.hud.banner(`MISSION COMPLETE — ${def.title}  +$${def.reward}`, 3.4);
+  G.hud.dialogue('Dario Fuentes', 'Good work, Mari. Lie low a minute — I will have something new soon.', 4);
+  G.saveGame();
+  if (cur.index === 5 && G.onStoryComplete) G.onStoryComplete();
+}
+
+function fail(G, reason) {
+  const cur = G.missions.current;
+  if (!cur) return;
+  cleanup(G);
+  G.missions.current = null;
+  G.audio.fail();
+  G.hud.banner('MISSION FAILED', 2.4);
+  G.hud.notify(reason + ' — the job is still on the board.');
+  G.saveGame();
+}
+
+function begin(G, i) {
+  cleanup(G);
+  const def = MISSION_DEFS[i];
+  const cur = { index: i, stage: 0, timer: null, data: { props: [], cars: [] } };
+  G.missions.current = cur;
+  G.hud.banner('MISSION: ' + def.title, 3);
+  const D = (text) => G.hud.dialogue('Dario Fuentes', text, 5.5);
+  switch (i) {
+    case 0:
+      D('Mari. Simple job: this package goes to the marina. Fast, clean, no questions.');
+      cur.timer = 100;
+      setTarget(G, L.marina.x, 222);
+      break;
+    case 1: {
+      D('Mari — the yellow sports car by the Serena Hotel. Bring it home to my garage.');
+      const car = spawnCar(G, { type: 'sports', color: 0xffd21f, x: -44, z: 206, heading: Math.PI / 2, kind: 'mission' });
+      cur.data.cars.push(car);
+      cur.data.targetCar = car;
+      setTarget(G, car.x, car.z);
+      break;
     }
-    if (idx === 5) {
-      if (!this.van) {
-        this.van = makeCarState(L.casino.x + 4, L.casino.z + 14, 0, 'van');
-        this.van.mesh = createCarMesh('van', 0xb9c0c9); this.scene.add(this.van.mesh); syncCarMesh(this.van);
+    case 2: {
+      D('Three cash bags sitting at the docks with my name on them. Collect, then go dark.');
+      const bagGeo = new THREE.BoxGeometry(0.9, 0.55, 0.6);
+      const bagMat = new THREE.MeshLambertMaterial({ color: 0x2e7d4f });
+      cur.data.bags = [];
+      for (const [x, z] of [[182, 104], [208, 130], [188, 142]]) {
+        const bag = new THREE.Mesh(bagGeo, bagMat);
+        bag.position.set(x, G.city.groundY(x, z) + 0.6, z);
+        bag.castShadow = true;
+        G.scene.add(bag);
+        cur.data.props.push(bag);
+        cur.data.bags.push({ x, z, mesh: bag, taken: false });
       }
-      this.activeTarget = this.van; this.timer = -1;
+      cur.data.collected = 0;
+      setTarget(G, 182, 104);
+      break;
+    }
+    case 3:
+      D('A little tour, against the clock. Six lights around the harbor. Try not to bend anything.');
+      cur.data.checkpoints = [
+        [112, 168], [56, 56], [0, -56], [-56, -112], [56, -168], [168, -56],
+      ];
+      cur.data.cp = 0;
+      cur.timer = 80;
+      G.police.setFloor(1);
+      setTarget(G, 112, 168);
+      break;
+    case 4: {
+      D('A rival crew is holding my briefcase at the warehouse. Go on foot. Go ready.');
+      G.combat.addAmmo(48);
+      if (!G.combat.drawn) G.hud.notify('Q draws your pistol');
+      cur.data.remaining = 4;
+      cur.timer = 120;
+      for (const [x, z] of [[240, 40], [250, 70], [230, 76], [254, 46]]) spawnGunman(G, x, z);
+      setTarget(G, 240, 58);
+      break;
+    }
+    case 5: {
+      D('Last one, Mari. The casino cash van, then the boat at the marina. Whatever happens — keep driving.');
+      const van = spawnCar(G, { type: 'cashvan', color: 0x5f7161, x: 74, z: -166, heading: 0, kind: 'mission' });
+      cur.data.cars.push(van);
+      cur.data.van = van;
+      cur.data.robT = 0;
+      setTarget(G, van.x, van.z);
+      break;
     }
   }
-  makeCheckpoints() {
-    const L = this.L;
-    return [this.front('marina'), this.front('hotel'), this.front('casino'),
-      this.front('safehouse'), this.front('warehouse'), this.front('garage')];
-  }
-  addPickup(x, z, color) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.5), new THREE.MeshLambertMaterial({ color }));
-    m.position.set(x, 0.8, z); this.scene.add(m);
-    this.pickups.push({ x, z, mesh: m, taken: false });
-  }
-  clearPickups() { for (const p of this.pickups) this.scene.remove(p.mesh); this.pickups = []; }
+}
 
-  fail(ctx, reason) {
-    this.hud.notify('MISSION FAILED — ' + reason, 4000);
-    this.queueDialogue([['Dario Fuentes', 'That went sideways. Come back and we run it again.']]);
-    this.active = null; this.timer = -1; this.clearPickups(); ctx.combat.clearEnemies();
+// Stage transitions that need side effects beyond a number bump.
+function advance(G, stage) {
+  const cur = G.missions.current;
+  cur.stage = stage;
+  if (cur.index === 4 && stage === 1) {
+    cur.timer = null;
+    const caseMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.25, 0.5),
+      new THREE.MeshLambertMaterial({ color: 0x6e4f2a })
+    );
+    caseMesh.position.set(246, G.city.groundY(246, 56) + 0.4, 56);
+    G.scene.add(caseMesh);
+    cur.data.props.push(caseMesh);
+    cur.data.briefcase = { x: 246, z: 56 };
+    G.hud.dialogue('Dario Fuentes', 'Crew is down. Grab my briefcase and bring it home.', 4.5);
+    setTarget(G, 246, 56);
   }
-  complete(ctx) {
-    const reward = MISSION_REWARDS[this.nextIndex];
-    ctx.addMoney(reward); this.audio.success();
-    this.hud.notify('MISSION COMPLETE — $' + reward, 4500);
-    const wasLast = this.nextIndex === MISSION_DEFS.length - 1;
-    this.nextIndex++; this.active = null; this.timer = -1; this.clearPickups();
-    if (wasLast) { this.finishedAll = true; if (ctx.onStoryEnd) ctx.onStoryEnd(); }
-    ctx.save();
+  if (cur.index === 4 && stage === 2) setTarget(G, -184, -56);
+  if (cur.index === 1 && stage === 1) setTarget(G, -184, -56);
+  if (cur.index === 2 && stage === 1) {
+    G.police.setStarsAtLeast(2);
+    G.hud.dialogue('Detective Ruth Calloway', 'All units — the docks job just went loud. Bring her in.', 4.5);
   }
-  objectiveText() {
-    if (!this.active) {
-      if (this.nextIndex >= MISSION_DEFS.length) return 'Free roam — Port Serena is yours.';
-      return 'Next job: "' + MISSION_DEFS[this.nextIndex].name + '" — meet Dario\'s contact at the marker';
+  if (cur.index === 2 && stage === 2) setTarget(G, -184, -196);
+  if (cur.index === 5 && stage === 1) {
+    G.police.setFloor(4);
+    G.police.setStarsAtLeast(4);
+    setTarget(G, L.marina.x, 244);
+  }
+}
+
+function reached(G, x, z, r) {
+  return dist2(G.player.x, G.player.z, x, z) < r * r;
+}
+function metres(G, x, z) {
+  return Math.round(Math.sqrt(dist2(G.player.x, G.player.z, x, z)));
+}
+
+function update(G, dt) {
+  const M = G.missions;
+  const p = G.player;
+  const cur = M.current;
+
+  if (!cur) {
+    // Between jobs: point at the next start marker.
+    if (M.done < MISSION_DEFS.length && G.state === 'playing') {
+      const s = STARTS[M.done];
+      setTarget(G, s.x, s.z);
+      const def = MISSION_DEFS[M.done];
+      G.hud.setObjective(`Next job: "${def.title}" — meet Dario's contact at the marker`, null);
+      if (reached(G, s.x, s.z, 3.4)) begin(G, M.done);
+    } else if (M.done >= MISSION_DEFS.length) {
+      hideTarget(G);
+      G.hud.setObjective('Free roam — Port Serena is yours', null);
     }
-    const idx = this.nextIndex;
-    if (idx === 1 && this.stage === 1) return 'Deliver the sports car to Dario\'s garage';
-    if (idx === 2 && this.stage === 0) return 'Collect the cash bags at the docks (' + this.collected + '/3)';
-    if (idx === 2 && this.stage === 1) return 'Lose the wanted level, then reach the safehouse';
-    if (idx === 3) return 'Hit checkpoint ' + (this.checkpoint + 1) + ' of 6';
-    if (idx === 4 && this.stage === 1) return 'Take the briefcase';
-    if (idx === 4 && this.stage === 2) return 'Escape — deliver the briefcase to the garage';
-    if (idx === 5 && this.stage === 1) return 'Escape to the boat at the marina!';
-    return this.active.objective;
+    return;
   }
 
-  update(dt, ctx) {
-    // dialogue cycling
-    if (this.dialogueQueue.length) {
-      this.dialogueT += dt;
-      if (this.dialogueT > 3.4) {
-        this.dialogueT = 0; this.dialogueQueue.shift();
-        if (this.dialogueQueue.length) { const [n, t] = this.dialogueQueue[0]; this.hud.showDialogue(n, t); }
-        else this.hud.hideDialogue();
-      }
-    }
-    const pp = ctx.player.pos;
-    // beacon placement
-    const mp = this.markerPos();
-    if (mp) { this.beacon.visible = true; this.beacon.position.x = mp.x; this.beacon.position.z = mp.z; this.beacon.rotation.y += dt; }
-    else this.beacon.visible = false;
+  if (cur.timer !== null) {
+    cur.timer -= dt;
+    if (cur.timer <= 0) { fail(G, 'Out of time'); return; }
+  }
+  const timer = cur.timer;
 
-    if (!this.active) {
-      const sp = this.startPos();
-      if (sp) {
-        const d = Math.hypot(pp.x - sp.x, pp.z - sp.z);
-        if (d < 4.5) this.startMission(ctx);
-      }
-      return;
+  switch (cur.index) {
+    case 0: {
+      G.hud.setObjective(`Drive the package to the marina — ${metres(G, L.marina.x, 222)}m`, timer);
+      if (!p.driving) G.hud.hint('You need a car for this run — press E by any car', 0.2);
+      if (p.driving && reached(G, L.marina.x, 222, 7)) complete(G);
+      break;
     }
-    // timers
-    if (this.timer > 0) {
-      this.timer -= dt;
-      if (this.timer <= 0) { this.fail(ctx, 'out of time'); return; }
-    }
-    const idx = this.nextIndex;
-    const near = (t, r) => t && Math.hypot(pp.x - t.x, pp.z - t.z) < (r || 5.5);
-
-    if (idx === 0) { if (near(this.activeTarget, 7)) this.complete(ctx); }
-    else if (idx === 1) {
-      if (this.stage === 0) {
-        if (ctx.player.mode === 'car' && ctx.player.car === ctx.traffic.sportCar) {
-          this.stage = 1; this.activeTarget = this.front('garage'); ctx.police.commitCrime('theft');
-          this.hud.notify('Car stolen! Deliver it to the garage.', 3500);
+    case 1: {
+      const car = cur.data.targetCar;
+      if (cur.stage === 0) {
+        setTarget(G, car.x, car.z);
+        G.hud.setObjective('Steal the yellow sports car at the Serena Hotel', null);
+        if (p.driving === car) {
+          G.police.setStarsAtLeast(1);
+          advance(G, 1);
         }
-      } else if (near(this.front('garage'), 7) && ctx.player.car === ctx.traffic.sportCar) this.complete(ctx);
-    }
-    else if (idx === 2) {
-      if (this.stage === 0) {
-        for (const p of this.pickups) {
-          if (!p.taken && Math.hypot(pp.x - p.x, pp.z - p.z) < 3.2) {
-            p.taken = true; p.mesh.visible = false; this.collected++; this.audio.pickup();
-            if (this.collected === 1) ctx.police.setStars(2);
-            this.hud.notify('Cash bag collected (' + this.collected + '/3)', 2500);
-          }
-        }
-        if (this.collected >= 3) { this.stage = 1; this.activeTarget = this.front('safehouse'); }
       } else {
-        this.activeTarget = ctx.police.stars > 0 ? null : this.front('safehouse');
-        if (ctx.police.stars === 0 && near(this.front('safehouse'), 6)) this.complete(ctx);
+        G.hud.setObjective(`Deliver the sports car to Dario's garage — ${metres(G, -184, -56)}m`, null);
+        if (p.driving === car && reached(G, -184, -56, 8)) complete(G);
+        else if (p.driving !== car) G.hud.hint('Get back in the yellow sports car', 0.2);
       }
+      break;
     }
-    else if (idx === 3) {
-      if (near(this.activeTarget, 7)) {
-        this.checkpoint++; this.audio.pickup();
-        if (this.checkpoint >= 6) this.complete(ctx);
-        else { this.activeTarget = this.checkpoints[this.checkpoint]; this.hud.notify('Checkpoint ' + this.checkpoint + '/6', 2000); }
-      }
-    }
-    else if (idx === 4) {
-      if (this.stage === 0) {
-        this.activeTarget = { x: this.L.warehouse.x, z: this.L.warehouse.z };
-        if (ctx.combat.aliveEnemies() === 0 && near(this.activeTarget, 26)) {
-          const wf = this.front('warehouse'); this.stage = 1; this.addPickup(wf.x, wf.z, 0xffd21f);
-          this.activeTarget = wf;
-          this.hud.notify('Crew cleared — grab the briefcase!', 3000);
-        }
-      } else if (this.stage === 1) {
-        const p = this.pickups[0];
-        if (p && !p.taken && Math.hypot(pp.x - p.x, pp.z - p.z) < 3) { p.taken = true; p.mesh.visible = false; this.stage = 2; this.activeTarget = this.front('garage'); this.audio.pickup(); }
-      } else if (near(this.front('garage'), 7)) this.complete(ctx);
-    }
-    else if (idx === 5) {
-      if (this.stage === 0) {
-        if (near(this.van, 5)) {
-          this.channel += dt;
-          if (this.channel > 2.2) {
-            this.stage = 1; ctx.police.setStars(4); ctx.addMoney(500);
-            this.activeTarget = { x: this.L.marina.x, z: this.L.marina.z + 26 };
-            this.hud.notify('Van robbed! Get to the boat!', 3500);
-            this.queueDialogue([['Det. Ruth Calloway', 'All units — the casino van is hit. Do not let Vega reach the water!']]);
+    case 2: {
+      if (cur.stage === 0) {
+        let nearest = null, nd = Infinity;
+        for (const bag of cur.data.bags) {
+          if (bag.taken) continue;
+          const d = dist2(p.x, p.z, bag.x, bag.z);
+          if (d < nd) { nd = d; nearest = bag; }
+          bag.mesh.rotation.y += dt * 1.5;
+          if (d < 7.3) {
+            bag.taken = true;
+            bag.mesh.visible = false;
+            cur.data.collected++;
+            G.audio.pickup();
+            G.money += 40;
+            G.hud.notify(`Cash bag collected (${cur.data.collected}/3)`);
           }
-        } else this.channel = Math.max(0, this.channel - dt);
-      } else if (near(this.activeTarget, 7)) this.complete(ctx);
+        }
+        if (nearest) setTarget(G, nearest.x, nearest.z);
+        G.hud.setObjective(`Collect the cash bags at the docks (${cur.data.collected}/3)`, null);
+        if (cur.data.collected >= 3) advance(G, 1);
+      } else if (cur.stage === 1) {
+        hideTarget(G);
+        G.hud.setObjective('Lose the police — break their line of sight', null);
+        if (G.police.stars === 0) advance(G, 2);
+      } else {
+        G.hud.setObjective(`Reach your safehouse — ${metres(G, -184, -196)}m`, null);
+        if (reached(G, -184, -196, 6)) complete(G);
+      }
+      break;
     }
-    // spin pickups
-    for (const p of this.pickups) if (!p.taken) { p.mesh.rotation.y += dt * 2; p.mesh.position.y = 0.8 + Math.sin(performance.now() / 300) * 0.15; }
+    case 3: {
+      const [cx, cz] = cur.data.checkpoints[cur.data.cp];
+      setTarget(G, cx, cz);
+      G.hud.setObjective(`Checkpoint ${cur.data.cp + 1} of 6 — ${metres(G, cx, cz)}m`, timer);
+      if (!p.driving) G.hud.hint('Stay in a car — this is a driving run', 0.2);
+      if (p.driving && reached(G, cx, cz, 9)) {
+        G.audio.pickup();
+        cur.data.cp++;
+        cur.timer += 16;
+        if (cur.data.cp >= cur.data.checkpoints.length) {
+          G.police.setFloor(0);
+          complete(G);
+        }
+      }
+      break;
+    }
+    case 4: {
+      if (cur.stage === 0) {
+        G.hud.setObjective(`Clear the rival crew at the warehouse (${4 - cur.data.remaining}/4)`, timer);
+      } else if (cur.stage === 1) {
+        G.hud.setObjective('Grab the briefcase', null);
+        if (reached(G, 246, 56, 2.6) && !p.driving) {
+          G.audio.pickup();
+          const mesh = cur.data.props[cur.data.props.length - 1];
+          if (mesh) mesh.visible = false;
+          advance(G, 2);
+        }
+      } else {
+        G.hud.setObjective(`Escape — deliver the briefcase to Dario's garage — ${metres(G, -184, -56)}m`, null);
+        if (reached(G, -184, -56, 7)) complete(G);
+      }
+      break;
+    }
+    case 5: {
+      const van = cur.data.van;
+      if (cur.stage === 0) {
+        setTarget(G, van.x, van.z);
+        const near = reached(G, van.x, van.z, 6.5);
+        const still = p.driving ? Math.abs(p.car.speed) < 2 : true;
+        if (near && still) {
+          cur.data.robT += dt;
+          G.hud.setObjective(`Robbing the cash van… ${Math.min(100, Math.round(cur.data.robT / 4 * 100))}%`, null);
+          if (cur.data.robT >= 4) {
+            G.money += 150;
+            advance(G, 1);
+            G.hud.banner('VAN HIT — GO!', 2);
+          }
+        } else {
+          cur.data.robT = Math.max(0, cur.data.robT - dt * 2);
+          G.hud.setObjective('Get to the armoured cash van at the casino and hold still beside it', null);
+        }
+      } else {
+        G.hud.setObjective(`Escape to the boat at the marina — ${metres(G, L.marina.x, 244)}m`, null);
+        if (reached(G, L.marina.x, 244, 6)) {
+          G.police.setFloor(0);
+          complete(G);
+        }
+      }
+      break;
+    }
   }
+  void teleport;
 }
