@@ -1,173 +1,180 @@
-// traffic.js — the ordinary drivers of Port Serena.
-//
-// Traffic cars follow the road lattice lane by lane: each one owns a
-// segment (an avenue or a street, a direction, a lane offset) and steers by
-// pure pursuit toward a point ahead on that segment. At junctions they
-// sometimes turn, sometimes pause; they brake for the car in front and stop
-// for pedestrians in the road. Parked cars line the kerbs, waiting to be
-// stolen. Cars that wander too far from the player are quietly recycled to
-// a road a few blocks away so the city always feels lived-in.
+// traffic.js — Port Serena's drivers: cars that follow the road grid lane by
+// lane, brake for the car ahead, pause at junctions, stop for pedestrians,
+// plus the parked cars lining the kerbs (all of them stealable).
 
-import { AVENUES, STREETS, MAX_TRAFFIC, MAX_PARKED } from './config.js';
-import { createCar, TRAFFIC_COLOURS } from './vehicles.js';
+import { ROADS_X, ROADS_Z, BEACH_ROAD_Z, LANE, CAPS, CAR_COLORS } from './config.js';
+import { createCar, driveCar, syncCarMesh } from './vehicles.js';
 
-const LANE = 4.5;
-
-// Lane centre for a segment. Right-hand traffic: the lane sits to the
-// driver's right of the road's centre line.
-function lanePoint(seg, along) {
-  if (seg.axis === 'z') { // on an avenue, moving along z
-    const off = seg.dir < 0 ? LANE : -LANE;
-    return { x: seg.coord + off, z: along };
-  }
-  const off = seg.dir > 0 ? LANE : -LANE;
-  return { x: along, z: seg.coord + off };
+const DIRS = [
+  { x: 0, z: -1 }, // north
+  { x: 0, z: 1 }, // south
+  { x: 1, z: 0 }, // east
+  { x: -1, z: 0 }, // west
+];
+// right-hand side of a heading, for lane offset
+function rightOf(d) {
+  return { x: -d.z, z: d.x };
+}
+function headingOf(d) {
+  return Math.atan2(d.x, d.z);
+}
+function nodeKey(x, z) {
+  return x + ',' + z;
 }
 
-function randomSegment(rng) {
-  if (rng.chance(0.5)) {
-    return { axis: 'z', coord: rng.pick(AVENUES), dir: rng.sign() };
-  }
-  return { axis: 'x', coord: rng.pick(STREETS), dir: rng.sign() };
-}
-
-function alongOf(seg, car) {
-  return seg.axis === 'z' ? car.z : car.x;
-}
-
-function spawnTrafficCar(G, nearPlayer) {
-  const rng = G.rng;
-  const seg = randomSegment(rng);
-  let along = rng.range(-280, 280);
-  if (nearPlayer) {
-    // Recycle near the player: pick a segment through their neighbourhood.
-    const p = G.playerPos;
-    const base = seg.axis === 'z' ? p.z : p.x;
-    along = Math.max(-285, Math.min(285, base + rng.range(90, 170) * rng.sign()));
-  }
-  const pt = lanePoint(seg, along);
-  const heading = seg.axis === 'z' ? (seg.dir > 0 ? 0 : Math.PI) : (seg.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
-  const type = rng.pick(['sedan', 'sedan', 'hatch', 'hatch', 'van']);
-  const colour = rng.chance(0.14) ? 0xf7c948 : rng.pick(TRAFFIC_COLOURS); // the odd taxi-yellow
-  const car = createCar(G, type, colour, pt.x, pt.z, heading, 'traffic');
-  car.ai = { seg, cruise: rng.range(9, 12.5), pause: 0, decidedAt: -999 };
-  car.speed = car.ai.cruise * 0.7;
-  return car;
-}
-
-export function initTraffic(G) {
-  const rng = G.rng;
-  G.traffic = [];
-  for (let i = 0; i < MAX_TRAFFIC; i++) G.traffic.push(spawnTrafficCar(G, false));
-
-  // Parked cars along the kerbs.
-  let parked = 0;
-  let guard = 0;
-  while (parked < MAX_PARKED && guard++ < 300) {
-    const onAve = rng.chance(0.5);
-    const coord = onAve ? rng.pick(AVENUES) : rng.pick(STREETS);
-    const along = rng.range(-290, 290);
-    const side = rng.sign();
-    const x = onAve ? coord + side * 7.4 : along;
-    const z = onAve ? along : coord + side * 7.4;
-    // Keep the story spots and spawn area clear.
-    if (Math.abs(x - 261) < 8 && Math.abs(z + 30) < 10) continue;
-    if (Math.hypot(x - 20, z - 168) < 12) continue;
-    let clear = true;
-    for (const c of G.cars) if (Math.hypot(c.x - x, c.z - z) < 6) { clear = false; break; }
-    if (!clear) continue;
-    const heading = onAve ? (side > 0 ? 0 : Math.PI) + (rng.chance(0.5) ? 0 : Math.PI) : (side > 0 ? Math.PI / 2 : -Math.PI / 2);
-    const car = createCar(G, rng.pick(['sedan', 'hatch', 'van', 'sedan']), rng.pick(TRAFFIC_COLOURS), x, z, heading, 'parked');
-    car.ai = { parked: true };
-    parked++;
-  }
-}
-
-// Is something solid just ahead of this car? Returns a desired speed cap.
-function trafficAhead(G, car) {
-  const fx = Math.sin(car.heading), fz = Math.cos(car.heading);
-  let cap = Infinity;
-  for (const other of G.cars) {
-    if (other === car || other.dead) continue;
-    const dx = other.x - car.x, dz = other.z - car.z;
-    const ahead = dx * fx + dz * fz;
-    if (ahead < 0.5 || ahead > 15) continue;
-    const lateral = Math.abs(dx * fz - dz * fx);
-    if (lateral > 2.3) continue;
-    cap = Math.min(cap, ahead < 6.5 ? 0 : other.speed);
-  }
-  for (const ped of G.peds) {
-    if (ped.dead) continue;
-    const dx = ped.x - car.x, dz = ped.z - car.z;
-    const ahead = dx * fx + dz * fz;
-    if (ahead < 0.5 || ahead > 8) continue;
-    if (Math.abs(dx * fz - dz * fx) > 2.1) continue;
-    cap = 0;
-  }
-  return cap;
-}
-
-export function updateTraffic(G, dt) {
-  const p = G.playerPos;
-  for (const car of G.traffic) {
-    if (car.driver !== 'traffic' || car.dead) continue; // stolen cars leave the pool
-    const ai = car.ai;
-    const seg = ai.seg;
-
-    // Recycle cars that ended up across the map from the player.
-    const distP = Math.hypot(car.x - p.x, car.z - p.z);
-    if (distP > 300) {
-      const fresh = spawnTrafficCar(G, true);
-      // Reuse the entity: move this car onto the fresh car's spot, drop the extra.
-      car.x = fresh.x; car.z = fresh.z; car.heading = fresh.heading;
-      car.ai = fresh.ai; car.speed = fresh.speed;
-      G.scene.remove(fresh.mesh);
-      G.cars.splice(G.cars.indexOf(fresh), 1);
-      continue;
+export function createTraffic(G) {
+  const rng = G.rng.fork('traffic');
+  const nodes = new Set();
+  const nodeList = [];
+  for (const x of ROADS_X) {
+    for (const z of [...ROADS_Z, BEACH_ROAD_Z]) {
+      nodes.add(nodeKey(x, z));
+      nodeList.push({ x, z });
     }
+  }
 
-    // Junction decisions: when close to a crossing road, maybe turn.
-    const along = alongOf(seg, car);
-    const crossList = seg.axis === 'z' ? STREETS : AVENUES;
-    for (const cross of crossList) {
-      const d = (cross - along) * seg.dir; // distance ahead to the crossing
-      if (d > 0 && d < 9 && Math.abs(along - ai.decidedAt) > 20) {
-        ai.decidedAt = cross;
-        if (G.rng.chance(0.16)) ai.pause = G.rng.range(0.5, 1.1); // junction courtesy pause
-        if (G.rng.chance(0.34)) {
-          // Turn onto the crossing road.
-          const newAxis = seg.axis === 'z' ? 'x' : 'z';
-          ai.seg = { axis: newAxis, coord: cross, dir: G.rng.sign() };
-        }
-        break;
+  function neighbour(node, d) {
+    // next intersection along d: scan the road coordinate lists
+    if (d.x !== 0) {
+      const xs = ROADS_X.filter((v) => (d.x > 0 ? v > node.x : v < node.x));
+      if (!xs.length) return null;
+      const nx = d.x > 0 ? Math.min(...xs) : Math.max(...xs);
+      return nodes.has(nodeKey(nx, node.z)) ? { x: nx, z: node.z } : null;
+    }
+    const zs = [...ROADS_Z, BEACH_ROAD_Z].filter((v) => (d.z > 0 ? v > node.z : v < node.z));
+    if (!zs.length) return null;
+    const nz = d.z > 0 ? Math.min(...zs) : Math.max(...zs);
+    return nodes.has(nodeKey(node.x, nz)) ? { x: node.x, z: nz } : null;
+  }
+
+  function lanePoint(node, d) {
+    const r = rightOf(d);
+    return { x: node.x + r.x * LANE, z: node.z + r.z * LANE };
+  }
+
+  function spawnCar(car) {
+    // pick a node + direction far from the player when possible
+    let node = rng.pick(nodeList);
+    for (let tries = 0; tries < 8; tries++) {
+      const cand = rng.pick(nodeList);
+      const dx = cand.x - G.player.x, dz = cand.z - G.player.z;
+      if (dx * dx + dz * dz > 150 * 150) { node = cand; break; }
+    }
+    const d = rng.pick(DIRS.filter((dd) => neighbour(node, dd)));
+    const next = neighbour(node, d);
+    const r = rightOf(d);
+    const t = rng.range(0.15, 0.8);
+    car.x = node.x + (next.x - node.x) * t + r.x * LANE;
+    car.z = node.z + (next.z - node.z) * t + r.z * LANE;
+    car.heading = headingOf(d);
+    car.speed = 0;
+    car.route = { node: next, dir: d, pause: 0, stuck: 0, lastX: car.x, lastZ: car.z };
+    syncCarMesh(car, 0);
+  }
+
+  const cars = [];
+  const types = ['sedan', 'hatch', 'wagon', 'sedan', 'hatch'];
+  for (let i = 0; i < CAPS.traffic; i++) {
+    const car = createCar(G, rng.pick(types), rng.pick(CAR_COLORS), 0, 0, 0);
+    car.driver = 'traffic';
+    spawnCar(car);
+    cars.push(car);
+  }
+
+  // parked cars along kerbs
+  const parkedSpots = [];
+  for (const bx of [-225, -135, -45, 45, 135, 225]) {
+    for (const bz of [-225, -135, -45, 45, 135]) {
+      if (rng.chance(0.55)) {
+        parkedSpots.push({
+          x: bx + rng.range(-30, 30),
+          z: bz - 41.5,
+          heading: Math.PI / 2,
+        });
+      }
+      if (rng.chance(0.45)) {
+        parkedSpots.push({
+          x: bx - 41.5,
+          z: bz + rng.range(-30, 30),
+          heading: 0,
+        });
       }
     }
-
-    // Pure pursuit toward a lookahead point on the (possibly new) segment.
-    const segNow = ai.seg;
-    const alongNow = alongOf(segNow, car);
-    const look = alongNow + segNow.dir * 16;
-    const target = lanePoint(segNow, Math.max(-292, Math.min(292, look)));
-    // Near the end of a road, wrap to the far end rather than leaving town.
-    if (Math.abs(alongNow) > 290) {
-      const pt = lanePoint(segNow, -segNow.dir * 285);
-      car.x = pt.x; car.z = pt.z;
-      continue;
-    }
-    const desired = Math.atan2(target.x - car.x, target.z - car.z);
-    let diff = desired - car.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    car.input.steer = Math.max(-1, Math.min(1, diff * 2.1));
-
-    let want = ai.cruise;
-    if (Math.abs(diff) > 0.45) want = Math.min(want, 5.5);
-    const cap = trafficAhead(G, car);
-    want = Math.min(want, cap);
-    if (ai.pause > 0) { ai.pause -= dt; want = 0; }
-
-    car.input.throttle = car.speed < want ? 0.85 : 0;
-    car.input.brake = car.speed > want + 1.5;
-    if (want === 0 && car.speed > 0.4) car.input.brake = true;
   }
+  for (const spot of parkedSpots.slice(0, CAPS.parked)) {
+    const car = createCar(G, rng.pick(types), rng.pick(CAR_COLORS), spot.x, spot.z, spot.heading);
+    car.driver = null;
+    syncCarMesh(car, 0);
+  }
+
+  function update(dt) {
+    for (const car of cars) {
+      if (car.driver !== 'traffic') continue; // stolen cars leave the fleet
+      const rt = car.route;
+      if (rt.pause > 0) {
+        rt.pause -= dt;
+        driveCar(car, dt, 0, 0, true);
+        syncCarMesh(car, dt);
+        continue;
+      }
+      const wp = lanePoint(rt.node, rt.dir);
+      const dx = wp.x - car.x, dz = wp.z - car.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 5) {
+        // arrived at the junction: choose the next leg
+        const options = DIRS.filter((d) => {
+          if (d.x === -rt.dir.x && d.z === -rt.dir.z) return false;
+          return neighbour(rt.node, d) !== null;
+        });
+        const straight = options.find((d) => d.x === rt.dir.x && d.z === rt.dir.z);
+        const nd = straight && rng.chance(0.62) ? straight : rng.pick(options.length ? options : [rt.dir]);
+        const next = neighbour(rt.node, nd);
+        if (next) {
+          rt.dir = nd;
+          rt.node = next;
+          if (rng.chance(0.22)) rt.pause = rng.range(0.6, 1.3); // junction courtesy stop
+        }
+      }
+      // steer toward the waypoint
+      const targetHeading = Math.atan2(dx, dz);
+      let diff = targetHeading - car.heading;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const steer = Math.max(-1, Math.min(1, diff * 2.0));
+      // obstacle scan: anything slow or stopped ahead means brake lights
+      let throttle = 1, brake = false;
+      const fx = Math.sin(car.heading), fz = Math.cos(car.heading);
+      for (const other of G.cars) {
+        if (other === car) continue;
+        const ox = other.x - car.x, oz = other.z - car.z;
+        const ahead = ox * fx + oz * fz;
+        if (ahead < 0.5 || ahead > 11) continue;
+        const side = Math.abs(ox * fz - oz * fx);
+        if (side < 1.7) {
+          if (ahead < 5.5) { throttle = 0; brake = true; }
+          else throttle = Math.min(throttle, 0.25);
+        }
+      }
+      if (!brake) {
+        for (const ped of G.peds) {
+          if (ped.dead) continue;
+          const ox = ped.x - car.x, oz = ped.z - car.z;
+          const ahead = ox * fx + oz * fz;
+          if (ahead > 0 && ahead < 7 && Math.abs(ox * fz - oz * fx) < 1.8) {
+            throttle = 0; brake = true;
+            break;
+          }
+        }
+      }
+      if (Math.abs(diff) > 2.4) throttle = Math.min(throttle, 0.3);
+      driveCar(car, dt, steer, throttle, brake);
+      // stuck in a jam? quietly re-route across town
+      const moved = Math.hypot(car.x - rt.lastX, car.z - rt.lastZ);
+      if (moved < 0.4) rt.stuck += dt; else { rt.stuck = 0; rt.lastX = car.x; rt.lastZ = car.z; }
+      if (rt.stuck > 14) spawnCar(car);
+      syncCarMesh(car, dt);
+    }
+  }
+
+  return { update, cars };
 }

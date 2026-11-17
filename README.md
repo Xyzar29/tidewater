@@ -4,32 +4,33 @@
 [![rank](https://make.fun/badge/gta6-01/Xyzar29/tidewater/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/Xyzar29/tidewater/reward.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**TIDEWATER** is an original 3D open-world crime game that runs entirely offline in a desktop browser — no build step, no downloads at runtime. three.js is vendored into the repo, every texture is drawn on a canvas at boot, and every sound is synthesized live with WebAudio.
+**TIDEWATER** is an original 3D open-world crime game that plays entirely offline in a desktop browser. There is no build step and nothing is fetched at runtime: three.js is vendored into the repo, every texture is painted on a canvas when the game boots, and every sound — engine, siren, gunfire, the ambient synth loop — is synthesized with WebAudio.
 
-Welcome to **Port Serena**: a coastal city at golden hour, all pastel towers, palm-lined beachfront, a working marina and quiet suburbs. You are **Marisol "Mari" Vega**, a courier who starts taking driving jobs from fixer **Dario Fuentes** — while **Detective Ruth Calloway** of the Port Serena PD makes sure every shortcut has a price. Six story jobs carry you from a timed marina delivery to an armoured-van robbery and a four-star escape to a waiting boat; between jobs the city is yours to free-roam.
+The city is **Port Serena**: pastel towers and palm trees, a beachfront promenade, a working marina, dockside warehouses and quiet suburbs, all under a permanent golden-hour sun. You play **Marisol "Mari" Vega**, a courier who starts running jobs for fixer **Dario Fuentes**. Every job pays. Every shortcut is noticed by **Detective Ruth Calloway** of the Port Serena PD.
 
-## What's in the city
+## What is in the game
 
-- **A living street grid** — instanced pastel buildings with lit windows, signed landmarks (Serena General Hospital, Casino Serena, the Serena Hotel, Dario's Garage, the PSPD precinct, Pier 9 warehouse, Mari's safehouse), palm trees, streetlights, beach umbrellas, an animated sea and bobbing marina boats
-- **Traffic with manners** — lane-following drivers who brake for the car ahead, pause at junctions, turn corners and stop for pedestrians; parked cars along every kerb, all of them stealable
-- **Pedestrians** — sidewalk crowds who stroll block to block, cross streets, and scatter when shots are fired or cars mount the pavement
-- **A full wanted system (0–5 stars)** — theft, collisions, hit-and-runs, brawls and gunfire all feed one heat meter; cruisers spawn out of sight, pursue with prediction, ram and box you in; sit stopped near them and the BUSTED meter fills — break line of sight and the heat bleeds away
-- **Combat** — fists, and a pistol with magazines, reserves and reloads; rival-crew gunmen who strafe and shoot back with visible tracers; WASTED sends you to the hospital with a bill, BUSTED to the precinct with a fine
-- **Six missions with dialogue, timers and cash rewards**, plus finders-keepers cash pickups for explorers, and a localStorage save so money and story progress survive a reload
+- **A city you can cross on foot or by car** — a full street grid with named districts (Downtown, Beachfront, Dockside, Midtown, Suburbs), signed landmarks (Serena General Hospital, PSPD Precinct, Dario's Garage, Serena Hotel, Casino Serena, Pier 9 Warehouse, the marina), instanced buildings with lit windows, palms, streetlights, beach umbrellas, bobbing boats and an animated sea.
+- **Traffic and pedestrians** — drivers who follow lanes, brake for the car ahead, pause at junctions and stop for people crossing; parked cars on every kerb. Every car in the city can be stolen and driven.
+- **A wanted system from 0 to 5 stars** — theft, hit-and-runs, brawls and gunfire all build heat. Cruisers spawn out of sight, pursue with prediction, and box you in; sit still next to one and the BUSTED meter fills. Break line of sight and the heat bleeds away.
+- **Combat** — fists, plus a pistol with magazines, reserves and reloads. Rival crew gunmen strafe and return fire with visible tracers. WASTED costs you a hospital bill; BUSTED costs you a fine and your freedom, briefly.
+- **A six-mission story** — a timed marina delivery, a stolen sports car, cash bags on the docks, a checkpoint run, a warehouse shootout over a briefcase, and an armoured-van robbery ending in a four-star escape to a waiting boat. Dialogue, timers, markers and cash rewards throughout, with free roam (and findable cash pickups) in between.
+- **HUD and minimap at all times** — health, district, money, wanted stars, objective with distance and timer, ammo, dialogue, and a live radar with traffic dots, police blips and the mission marker.
+- **A save that survives reloads** — money, story progress and position persist in localStorage; Continue on the title screen picks up where you left off.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
-| W A S D / arrows | Move / drive |
-| Mouse (click the game to capture) | Look |
+| W A S D / arrow keys | Move / drive |
+| Mouse (click the game to capture it) | Look |
 | E | Enter / exit any car |
-| F or Click (unarmed) | Melee |
-| Q | Draw / holster pistol |
-| Click (pistol drawn) | Shoot |
-| R | Reload |
 | Shift | Run |
-| Space (in a car) | Brake |
+| Space | Brake (in a car) |
+| Q | Draw / holster the pistol |
+| Click | Shoot (pistol drawn) / melee |
+| F | Melee |
+| R | Reload |
 | P | Pause |
 | M | Mute |
 

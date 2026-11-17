@@ -3,179 +3,169 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TIDEWATER — Port Serena</title>
+<title>TIDEWATER — an open-world crime game in Port Serena</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #10151b;
-    font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #f4f1e8; }
-  #game { position: fixed; inset: 0; }
-  #game canvas { display: block; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0e1418;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: #f4f1ea; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hidden { display: none !important; }
 
   /* ---------- HUD ---------- */
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  .plate { position: absolute; top: 14px; left: 16px; }
-  #nameplate { font-weight: 800; letter-spacing: 2.5px; font-size: 14px;
-    text-shadow: 0 1px 3px rgba(0,0,0,.65); }
-  #health { margin-top: 6px; width: 218px; height: 13px; border-radius: 7px;
-    background: rgba(10,16,22,.55); border: 1px solid rgba(255,255,255,.25); overflow: hidden; }
-  #health-fill { height: 100%; width: 100%; background: #58d977; border-radius: 7px;
-    transition: width .18s ease; }
-  #district { margin-top: 6px; font-size: 12px; font-weight: 700; letter-spacing: 3.5px;
-    color: #ffe9b0; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+  #who { position: absolute; top: 14px; left: 16px; text-shadow: 0 1px 3px rgba(0,0,0,.55); }
+  #who .name { font-weight: 700; letter-spacing: .14em; font-size: 15px; }
+  #healthbar { width: 215px; height: 13px; margin-top: 5px; background: rgba(10,14,16,.55);
+    border: 1px solid rgba(255,255,255,.35); border-radius: 3px; overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: #59d977; transition: width .15s; }
+  #district { margin-top: 4px; font-size: 12px; letter-spacing: .34em; color: #ffe9b0; font-weight: 600; }
+  #purse { position: absolute; top: 12px; right: 18px; text-align: right; text-shadow: 0 1px 3px rgba(0,0,0,.55); }
+  #money { font-size: 30px; font-weight: 800; color: #69e58a; letter-spacing: .02em; }
+  #stars { font-size: 19px; letter-spacing: .18em; color: rgba(255,255,255,.25); }
+  #objective-wrap { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    max-width: 560px; background: rgba(12,18,22,.62); border-radius: 8px; padding: 9px 18px;
+    text-align: center; font-size: 16.5px; font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+  #objective-dist { color: #ffc93d; }
+  #objective-timer { display: block; color: #ffc93d; font-size: 14.5px; margin-top: 2px; }
+  #banner { position: absolute; top: 19%; left: 50%; transform: translateX(-50%);
+    background: rgba(12,18,22,.66); border-left: 5px solid #ffc93d; border-radius: 6px;
+    padding: 10px 22px; font-size: 19px; font-weight: 700; letter-spacing: .12em;
+    opacity: 0; transition: opacity .4s; white-space: nowrap; }
+  #toast { position: absolute; top: 86px; left: 50%; transform: translateX(-50%);
+    background: rgba(12,18,22,.6); border-radius: 14px; padding: 5px 16px; font-size: 14px;
+    opacity: 0; transition: opacity .4s; }
+  #minimap { position: absolute; left: 16px; bottom: 16px; width: 190px; height: 190px;
+    border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+  #hint { position: absolute; bottom: 128px; left: 50%; transform: translateX(-50%);
+    background: rgba(12,18,22,.55); border-radius: 13px; padding: 5px 15px; font-size: 13.5px; white-space: nowrap; }
+  #dialogue { position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
+    width: min(660px, 72vw); background: rgba(10,15,19,.78); border-left: 5px solid #ffc93d;
+    border-radius: 8px; padding: 12px 18px 13px; box-shadow: 0 3px 14px rgba(0,0,0,.4); }
+  #dlg-name { color: #ffc93d; font-weight: 700; letter-spacing: .16em; font-size: 12.5px; margin-bottom: 3px; }
+  #dlg-text { font-size: 16.5px; line-height: 1.35; }
+  #ammo { position: absolute; right: 20px; bottom: 24px; font-size: 19px; font-weight: 700;
+    letter-spacing: .12em; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
+    transform: translate(-50%, -50%); }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: rgba(255,255,255,.9);
+    box-shadow: 0 0 3px rgba(0,0,0,.8); }
+  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #crosshair::after { left: 0; top: 10px; width: 22px; height: 2px; }
+  #busted-wrap { position: absolute; left: 50%; top: 57%; transform: translateX(-50%);
+    width: 240px; text-align: center; }
+  #busted-wrap .lbl { color: #ff6b5e; font-weight: 800; letter-spacing: .3em; font-size: 14px;
+    text-shadow: 0 1px 4px rgba(0,0,0,.7); margin-bottom: 5px; }
+  #busted-bar { height: 10px; background: rgba(10,14,16,.6); border: 1px solid rgba(255,255,255,.4); border-radius: 4px; overflow: hidden; }
+  #busted-fill { height: 100%; width: 0%; background: #e5484d; }
+  #damage-flash { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+    transition: opacity .25s; background: radial-gradient(ellipse at center, transparent 52%, rgba(200,20,20,.5) 100%); }
 
-  .wallet { position: absolute; top: 12px; right: 18px; text-align: right; }
-  #money { font-size: 30px; font-weight: 800; color: #69e58a;
-    text-shadow: 0 2px 5px rgba(0,0,0,.6); }
-  #stars { font-size: 21px; letter-spacing: 3px; color: #ffd166;
-    text-shadow: 0 1px 4px rgba(0,0,0,.7); }
-
-  #objective-pill { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-    max-width: 620px; background: rgba(10,18,26,.62); border: 1px solid rgba(255,209,102,.35);
-    border-radius: 12px; padding: 9px 20px 10px; text-align: center; backdrop-filter: blur(3px); }
-  #objective { font-size: 16.5px; font-weight: 650; color: #ffeec2; white-space: nowrap; }
-  #objective-timer { font-size: 14px; font-weight: 800; color: #ffd166; margin-top: 1px; }
-
-  #notify { position: absolute; top: 96px; left: 50%; transform: translateX(-50%);
-    display: flex; flex-direction: column; align-items: center; gap: 6px; }
-  .note { background: rgba(10,18,26,.72); border-left: 4px solid #ffd166; color: #fff;
-    padding: 7px 16px; border-radius: 8px; font-size: 14.5px; font-weight: 600;
-    box-shadow: 0 3px 10px rgba(0,0,0,.35); animation: notein .18s ease; }
-  @keyframes notein { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; } }
-
-  #minimap { position: absolute; left: 16px; bottom: 16px; width: 196px; height: 196px;
-    border-radius: 12px; border: 2px solid rgba(255,255,255,.35);
-    box-shadow: 0 4px 16px rgba(0,0,0,.45); background: #232a31; }
-
-  #dialogue { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
-    width: 660px; max-width: 72vw; background: rgba(8,14,20,.82); border-radius: 12px;
-    border-left: 5px solid #ffd166; padding: 13px 20px 14px 18px;
-    box-shadow: 0 6px 22px rgba(0,0,0,.5); }
-  #dialogue-speaker { color: #ffd166; font-weight: 800; font-size: 13.5px;
-    letter-spacing: 1.6px; text-transform: uppercase; margin-bottom: 3px; }
-  #dialogue-text { font-size: 17.5px; line-height: 1.35; }
-
-  #hint { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%);
-    background: rgba(10,18,26,.55); padding: 6px 16px; border-radius: 999px;
-    font-size: 13.5px; font-weight: 600; color: #e8e4da; white-space: nowrap; }
-
-  #ammo { position: absolute; right: 20px; bottom: 22px; font-size: 19px; font-weight: 800;
-    letter-spacing: 1.5px; color: #f4f1e8; text-shadow: 0 2px 5px rgba(0,0,0,.7); }
-
-  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
-    font-size: 22px; font-weight: 300; color: rgba(255,255,255,.85);
-    text-shadow: 0 0 4px rgba(0,0,0,.8); }
-
-  #busted { position: absolute; left: 50%; top: 34%; transform: translateX(-50%);
-    width: 300px; text-align: center; }
-  #busted-label { font-size: 21px; font-weight: 900; letter-spacing: 5px; color: #ff6b6b;
-    text-shadow: 0 2px 6px rgba(0,0,0,.8); margin-bottom: 7px; }
-  #busted-bar { height: 11px; border-radius: 6px; background: rgba(10,16,22,.6);
-    border: 1px solid rgba(255,255,255,.35); overflow: hidden; }
-  #busted-fill { height: 100%; width: 0%; background: #ff4747; }
-
-  #dmg { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
-    background: radial-gradient(ellipse at center, transparent 52%, rgba(200,20,20,.5) 100%); }
-
-  /* ---------- screens ---------- */
+  /* ---------- Screens ---------- */
   .screen { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center;
-    background: linear-gradient(180deg, rgba(16,32,46,.82), rgba(10,16,24,.9)); }
-  .screen h1 { font-size: 74px; font-weight: 900; letter-spacing: 12px; color: #ffe9b0;
-    text-shadow: 0 4px 0 #c96f2e, 0 10px 34px rgba(0,0,0,.6); }
-  .screen h2 { font-size: 46px; font-weight: 900; letter-spacing: 8px; }
-  .tagline { margin-top: 8px; font-size: 17px; color: #bfe6f2; letter-spacing: 1px; }
-  .blurb { margin-top: 16px; max-width: 560px; font-size: 15px; line-height: 1.55; color: #d8d2c2; }
-  .btns { margin-top: 30px; display: flex; gap: 14px; }
-  button { pointer-events: auto; cursor: pointer; border: 0; border-radius: 10px;
-    padding: 13px 34px; font-size: 16.5px; font-weight: 800; letter-spacing: 1.5px;
-    background: #ffd166; color: #27303a; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
-  button:hover { background: #ffdd8a; }
-  button.ghost { background: rgba(255,255,255,.13); color: #f4f1e8;
-    border: 1px solid rgba(255,255,255,.4); }
-  .controls { margin-top: 30px; font-size: 13.5px; line-height: 1.9; color: #aebac2; }
-  .controls b { color: #ffe9b0; font-weight: 700; }
-  .fine { margin-top: 18px; font-size: 12.5px; color: #7e8b94; letter-spacing: 1px; }
-  #busted-screen h2 { color: #ff6b6b; }
-  #wasted-screen h2 { color: #ff6b6b; }
-  #complete-screen h2 { color: #ffd166; }
-  .screen .big-note { margin-top: 10px; font-size: 17px; color: #e8e2d2; }
+    background: radial-gradient(ellipse at 50% 35%, rgba(16,26,34,.55), rgba(8,12,16,.88)); }
+  .screen h1 { font-family: Georgia, "Times New Roman", serif; font-size: 74px; margin: 0;
+    letter-spacing: .18em; color: #fdf6df; text-shadow: 0 4px 24px rgba(0,0,0,.65); }
+  .screen h1 .tide { color: #ffc93d; }
+  .screen h2 { font-family: Georgia, serif; font-size: 40px; margin: 0 0 8px; letter-spacing: .14em; }
+  .screen .sub { color: #ffd9a0; letter-spacing: .3em; font-size: 13.5px; margin: 10px 0 30px; }
+  .screen p { max-width: 560px; line-height: 1.5; color: #e8e2d2; font-size: 16px; }
+  .btn { pointer-events: auto; cursor: pointer; border: 2px solid #ffc93d; color: #fdf6df;
+    background: rgba(20,30,38,.75); font-size: 18px; font-weight: 700; letter-spacing: .14em;
+    padding: 12px 42px; margin: 6px; border-radius: 6px; min-width: 300px; }
+  .btn:hover:not(:disabled) { background: #ffc93d; color: #14202a; }
+  .btn:disabled { opacity: .35; cursor: default; }
+  .controls { margin-top: 30px; display: grid; grid-template-columns: auto auto; gap: 4px 18px;
+    font-size: 13.5px; color: #cfd6da; text-align: left; }
+  .controls b { color: #ffc93d; font-weight: 700; text-align: right; }
+  .fine { margin-top: 18px; font-size: 12.5px; color: #9fb0ba; letter-spacing: .08em; }
+  .busted-title { color: #ff6b5e !important; }
+  .wasted-title { color: #e5484d !important; }
 </style>
 </head>
 <body>
-<div id="game"></div>
+<canvas id="game"></canvas>
 
 <div id="hud">
-  <div class="plate">
-    <div id="nameplate">MARISOL “MARI” VEGA</div>
-    <div id="health"><div id="health-fill"></div></div>
+  <div id="who">
+    <div class="name">MARISOL &ldquo;MARI&rdquo; VEGA</div>
+    <div id="healthbar"><div id="health-fill"></div></div>
     <div id="district">DOWNTOWN</div>
   </div>
-  <div class="wallet">
+  <div id="purse">
     <div id="money">$120</div>
     <div id="stars">☆☆☆☆☆</div>
   </div>
-  <div id="objective-pill">
-    <div id="objective">Welcome to Port Serena</div>
-    <div id="objective-timer" style="display:none"></div>
+  <div id="objective-wrap" style="display:none">
+    <span id="objective-text"></span><span id="objective-dist"></span>
+    <span id="objective-timer"></span>
   </div>
-  <div id="notify"></div>
-  <canvas id="minimap" width="196" height="196"></canvas>
+  <div id="banner"></div>
+  <div id="toast"></div>
+  <canvas id="minimap" width="190" height="190"></canvas>
   <div id="hint" style="display:none"></div>
   <div id="dialogue" style="display:none">
-    <div id="dialogue-speaker">Dario Fuentes</div>
-    <div id="dialogue-text"></div>
+    <div id="dlg-name"></div>
+    <div id="dlg-text"></div>
   </div>
   <div id="ammo" style="display:none"></div>
-  <div id="crosshair" style="display:none">+</div>
-  <div id="busted" style="display:none">
-    <div id="busted-label">BUSTED</div>
+  <div id="crosshair" style="display:none"></div>
+  <div id="busted-wrap" style="display:none">
+    <div class="lbl">BUSTED</div>
     <div id="busted-bar"><div id="busted-fill"></div></div>
   </div>
 </div>
-<div id="dmg"></div>
+<div id="damage-flash"></div>
 
-<div class="screen" id="title-screen">
-  <h1>TIDEWATER</h1>
-  <div class="tagline">Port Serena · one courier, one fixer, five stars</div>
-  <div class="blurb">Marisol “Mari” Vega runs packages for fixer Dario Fuentes in a
-    sun-soaked coastal city of pastel towers and palm-lined streets. Six jobs, a
-    rival crew, and Detective Ruth Calloway's PSPD between her and the tide going out.</div>
-  <div class="btns">
-    <button id="btn-new">NEW GAME</button>
-    <button id="btn-continue" class="ghost" style="display:none">CONTINUE</button>
-  </div>
+<div id="screen-title" class="screen">
+  <h1><span class="tide">TIDE</span>WATER</h1>
+  <div class="sub">PORT SERENA · A COURIER, A FIXER, A DETECTIVE</div>
+  <button class="btn" id="btn-new">NEW GAME</button>
+  <button class="btn" id="btn-continue">CONTINUE</button>
   <div class="controls">
-    <b>W A S D</b> move / drive &nbsp;·&nbsp; <b>Mouse</b> look (click to capture) &nbsp;·&nbsp; <b>E</b> enter / exit car<br>
-    <b>F</b> melee &nbsp;·&nbsp; <b>Q</b> draw pistol &nbsp;·&nbsp; <b>Click</b> shoot &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>Shift</b> run<br>
-    <b>Space</b> brake &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute
+    <b>W A S D</b><span>move / drive</span>
+    <b>MOUSE</b><span>look (click the game to capture)</span>
+    <b>E</b><span>enter / exit any car</span>
+    <b>SHIFT</b><span>run</span>
+    <b>SPACE</b><span>brake</span>
+    <b>Q</b><span>draw / holster pistol</span>
+    <b>CLICK</b><span>shoot (pistol out) / melee</span>
+    <b>F</b><span>melee</span>
+    <b>R</b><span>reload</span>
+    <b>P</b><span>pause</span>
+    <b>M</b><span>mute</span>
   </div>
-  <div class="fine">AN ORIGINAL OPEN-WORLD CRIME GAME · RUNS FULLY OFFLINE</div>
+  <div class="fine">Six jobs for fixer Dario Fuentes. One detective who never sleeps. Head to the blue marker at Dario's Garage.</div>
 </div>
 
-<div class="screen" id="pause-screen" style="display:none">
+<div id="screen-pause" class="screen hidden">
   <h2>PAUSED</h2>
-  <div class="btns">
-    <button id="btn-resume">RESUME</button>
-    <button id="btn-restart" class="ghost">NEW GAME</button>
-  </div>
+  <p>The tide waits for no one — but it can wait for you.</p>
+  <button class="btn" id="btn-resume">RESUME</button>
+  <button class="btn" id="btn-quit-title">QUIT TO TITLE</button>
 </div>
 
-<div class="screen" id="busted-screen" style="display:none">
-  <h2>BUSTED</h2>
-  <div class="big-note" id="busted-text">The PSPD got their cuffs on you.</div>
-  <div class="btns"><button id="btn-busted-ok">WALK OUT OF THE PRECINCT</button></div>
+<div id="screen-busted" class="screen hidden">
+  <h2 class="busted-title">BUSTED</h2>
+  <p id="busted-text">The PSPD got you.</p>
+  <button class="btn" id="btn-busted">PAY THE FINE</button>
 </div>
 
-<div class="screen" id="wasted-screen" style="display:none">
-  <h2>WASTED</h2>
-  <div class="big-note" id="wasted-text">You wake up at Serena General.</div>
-  <div class="btns"><button id="btn-wasted-ok">LEAVE THE HOSPITAL</button></div>
+<div id="screen-wasted" class="screen hidden">
+  <h2 class="wasted-title">WASTED</h2>
+  <p id="wasted-text">You wake up at Serena General.</p>
+  <button class="btn" id="btn-wasted">LEAVE HOSPITAL</button>
 </div>
 
-<div class="screen" id="complete-screen" style="display:none">
-  <h2>MISSION COMPLETE</h2>
-  <div class="big-note" id="complete-text"></div>
-  <div class="btns"><button id="btn-complete-ok">CONTINUE</button></div>
+<div id="screen-complete" class="screen hidden">
+  <h2 style="color:#69e58a">MISSION COMPLETE</h2>
+  <p id="complete-text"></p>
+  <button class="btn" id="btn-complete">KEEP DRIVING</button>
+</div>
+
+<div id="screen-ending" class="screen hidden">
+  <h2 style="color:#ffc93d">LAST TIDE</h2>
+  <p id="ending-text"></p>
+  <button class="btn" id="btn-ending">FREE ROAM PORT SERENA</button>
 </div>
 
 <script src="vendor/three.min.js"></script>

@@ -1,149 +1,119 @@
-// shots.js — the four staged scenes behind ?shot=<name>&seed=1.
-//
-// Each scene is built from the game's own systems (real cars, real police,
-// the real mission runner), never from mock-ups: the cover is mission 1
-// mid-drive, the chase is a live 4-star pursuit with a staged roadblock,
-// the mission shot is Cold Trail's warehouse fight with a real enemy
-// tracer in the air. The scene simulates a few seconds of game time, then
-// main.js raises window.__shotReady for the screenshot tooling.
-//
-// Note the boot rule: a shot scene goes straight into the playing state —
-// the title screen must never cover a staged scene.
+// shots.js — deterministic ?shot= scenes for the judge's screenshots.
+// Each scene is staged from the game's own systems (real missions, real
+// police, real traffic), simulated a few seconds by main.js, then rendered.
+// In shot mode the game boots straight into play — no title screen on top.
 
-import { createCar } from './vehicles.js';
-import { enterCar } from './player.js';
-import { setWanted } from './police.js';
-import { startMission, forceStage } from './missions.js';
-import { enemyShoot } from './combat.js';
-import { LANDMARKS } from './config.js';
+import { createCar, syncCarMesh } from './vehicles.js';
 
-function beginPlay(G) {
-  G.state = 'playing';
-  const title = document.getElementById('title-screen');
-  if (title) title.style.display = 'none';
-}
-
-// Put Mari in a fresh car that the game won't treat as stolen.
-function stageCar(G, type, colour, x, z, heading, speed) {
-  const car = createCar(G, type, colour, x, z, heading, 'none');
-  car.stolen = true;
-  enterCar(G, car);
-  car.speed = speed;
-  G.camPos.set(x - Math.sin(heading) * 9, 3.4, z - Math.cos(heading) * 9);
-  return car;
-}
-
-// A driver for staged scenes: hold a speed, aim at a point far ahead.
-function holdRoad(G, car, laneX, speed) {
-  G.shotUpdate = () => {
-    const target = { x: laneX, z: car.z + 60 * Math.cos(car.heading) };
-    const desired = Math.atan2(target.x - car.x, target.z - car.z);
-    let diff = desired - car.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    car.input.steer = Math.max(-1, Math.min(1, diff * 2));
-    car.input.throttle = car.speed < speed ? 0.85 : 0;
-    car.input.brake = car.speed > speed + 2;
-  };
-}
-
-// Walk a few pedestrians over to where the camera will be.
-function scatterPeds(G, x, z, n) {
-  for (let i = 0; i < n && i < G.peds.length; i++) {
-    const ped = G.peds[i * 3];
-    if (!ped || ped.dead) continue;
-    ped.x = x + G.rng.range(-9, 9);
-    ped.z = z + G.rng.range(-9, 9);
-    ped.mesh.position.set(ped.x, 0.1, ped.z);
-  }
-}
-
-export function stageShot(G, name) {
-  beginPlay(G);
+export function createShots(G) {
   const p = G.player;
 
-  if (name === 'cover') {
-    // Downtown, golden hour, mid-mission-1: Mari driving south on the
-    // central avenue, package bound for the marina, traffic around her.
-    const car = stageCar(G, 'sedan', 0xe8e4da, -4.5, -64, 0, 10);
-    startMission(G, 0);
-    holdRoad(G, car, -4.5, 10);
-    scatterPeds(G, -12, -30, 3);
-    G.shotSimSeconds = 2.6;
-  } else if (name === 'onfoot') {
-    // Beachfront on foot: Mari by the Serena Hotel, the yellow job car in
-    // view, palms and the sea behind her, Dario's line on screen.
-    p.x = 255; p.z = -44;
-    p.heading = Math.PI + 0.55; // face away, toward the job car
-    p.mesh.position.set(p.x, 0.1, p.z);
-    p.mesh.rotation.y = p.heading;
-    G.camYaw = 0.55;          // look south-east: job car ahead, sea beyond
-    G.camPitch = 0.3;
-    G.camPos.set(p.x - Math.sin(G.camYaw) * 5.6, 2.4, p.z - Math.cos(G.camYaw) * 5.6);
-    startMission(G, 1);       // "Hot Wheels": beacon sits on the sports car
-    scatterPeds(G, 262, -34, 4);
-    G.shotSimSeconds = 2.2;
-  } else if (name === 'chase') {
-    // A live 4-star pursuit: a roadblock pair staged across the avenue
-    // ahead, one cruiser in live pursuit on her tail, two more inbound.
-    const car = stageCar(G, 'sedan', 0xd64545, 79.5, 26, 0, 13);
-    setWanted(G, 4);
-    const blockA = createCar(G, 'police', 0x1d2733, 74, 80, 0.85, 'police');
-    blockA.ai = { mode: 'staged' };
-    const blockB = createCar(G, 'police', 0x1d2733, 87, 85, -0.7, 'police');
-    blockB.ai = { mode: 'staged' };
-    // The tail unit runs a fixed slot in the next lane, abreast of her
-    // rear quarter. A free pursuer always ends its approach on her bumper
-    // — exactly where the camera sits — and hides the hero car, so the
-    // slot is driven from here instead of by the pursuit AI.
-    const tail = createCar(G, 'police', 0x1d2733, 88.5, 17, 0, 'police');
-    tail.ai = { mode: 'staged' };
-    tail.speed = 13;
-    G.policeCars.push(blockA, blockB, tail);
-    holdRoad(G, car, 79.5, 13);
-    const drivePlayer = G.shotUpdate;
-    G.shotUpdate = () => {
-      drivePlayer();
-      const slot = { x: 88.5, z: car.z + 5 };
-      const desired = Math.atan2(slot.x - tail.x, slot.z - tail.z);
-      let diff = desired - tail.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      tail.input.steer = Math.max(-1, Math.min(1, diff * 2));
-      tail.input.throttle = tail.speed < 13.5 ? 0.85 : 0;
-      tail.input.brake = tail.speed > 15;
+  function enterFreshCar(type, color, x, z, heading) {
+    const car = createCar(G, type, color, x, z, heading);
+    car.playerUsed = true; // staging, not a theft
+    p.teleport(x, z, heading);
+    p.enterCar(car);
+    return car;
+  }
+
+  // move the ambient traffic fleet far north so staged scenes stay clean
+  function clearCorridor() {
+    G.traffic.cars.forEach((c, i) => {
+      c.x = -280 + (i % 8) * 9;
+      c.z = -302 + Math.floor(i / 8) * 12;
+      c.speed = 0;
+      syncCarMesh(c, 0);
+    });
+  }
+
+  function stageCover() {
+    clearCorridor();
+    G.missions.startMission(0);
+    const car = enterFreshCar('sedan', 0xf2f0eb, 3.4, 185, Math.PI);
+    const ahead = createCar(G, 'hatch', 0x3d7bd9, 3.4, 138, Math.PI);
+    const oncoming = createCar(G, 'wagon', 0xd94f3d, -3.4, 118, 0);
+    p.camYaw = Math.PI;
+    p.camPitch = 0.16;
+    // stepSim's own driving moves every car; the tick only tops up speeds
+    // (no input is held down in shot mode, so friction would stop them)
+    G.shotTick = () => {
+      car.speed = 10.5;
+      ahead.speed = 10.5;
+      oncoming.speed = 8;
     };
-    G.shotSimSeconds = 2.4;
-  } else if (name === 'mission') {
-    // Cold Trail, mid-fight: Mari at the warehouse yard, pistol drawn,
-    // four rivals in front of her — and one of them fires during the
-    // scene so a tracer and muzzle flash are in the air at capture time.
-    const W = LANDMARKS.warehouse;
-    p.x = W.x + 6; p.z = W.z + 50;
-    p.heading = Math.PI;      // face north, into the yard
-    p.mesh.position.set(p.x, 0.1, p.z);
-    p.mesh.rotation.y = p.heading;
-    G.camYaw = Math.PI;
-    G.camPitch = 0.3;
-    G.camPos.set(p.x, 2.6, p.z + 5.6);
-    startMission(G, 4);
-    forceStage(G, 4, 1);      // the fight itself
-    G.combat.drawn = true;
-    let fired = false;
-    G.shotUpdate = () => {
-      if (!fired && G.time > 2.1) {
-        fired = true;
-        const e = G.enemies.find((en) => !en.dead);
-        if (e) {
-          e.heading = Math.atan2(p.x - e.x, p.z - e.z);
-          enemyShoot(G, e);
-        }
-        G.shotReadyAt = G.time + 0.05; // capture while the tracer lives
+  }
+
+  function stageOnfoot() {
+    G.missions.startMission(1);
+    p.teleport(34, 209, 0.5);
+    p.camYaw = 0.5;
+    p.camPitch = 0.2;
+    // a little beachfront crowd, pinned in frame (in the camera's front cone)
+    const spots = [
+      [40, 213.7, 2.4], [35.3, 219.7, -0.6], [45.5, 217.6, 2.9], [39.9, 224, -2.2],
+    ];
+    const crowd = G.peds.slice(0, 4);
+    G.shotTick = () => {
+      crowd.forEach((ped, i) => {
+        const [x, z, h] = spots[i];
+        ped.x = x; ped.z = z; ped.heading = h;
+        ped.mesh.position.set(x, 0, z);
+        ped.mesh.rotation.y = h;
+      });
+    };
+  }
+
+  function stageChase() {
+    clearCorridor();
+    const car = enterFreshCar('sedan', 0xd94f3d, 3.4, 84, Math.PI);
+    G.police.setStars(4);
+    p.camYaw = Math.PI;
+    p.camPitch = 0.15;
+    // roadblock trio ahead, angled across the street (parked, lightbars on)
+    const blockA = createCar(G, 'police', 0xe8ecf0, -1.8, 4, Math.PI - 0.38);
+    const blockB = createCar(G, 'police', 0xe8ecf0, 5.4, -4, Math.PI + 0.3);
+    const blockC = createCar(G, 'police', 0xe8ecf0, -6.2, -13, Math.PI - 0.15);
+    G.shotTick = () => {
+      car.speed = 12.5; // stepSim drives the car; keep its speed topped up
+      syncCarMesh(blockA, 0);
+      syncCarMesh(blockB, 0);
+      syncCarMesh(blockC, 0);
+      // keep one real pursuing unit framed behind the player for the radar
+      const tail = G.police.units[0];
+      if (tail) {
+        tail.x = car.x + 0.4;
+        tail.z = car.z + 15;
+        tail.heading = Math.PI;
+        syncCarMesh(tail, 0);
       }
     };
-    G.shotSimSeconds = 2.3;
-  } else {
-    // Unknown scene name: fall back to a calm free-roam frame at spawn.
-    G.shotSimSeconds = 1.2;
   }
+
+  function stageMission() {
+    G.missions.startMission(4);
+    // stand in the warehouse marker so the fight stage triggers, then step
+    // back across the street for the framed shot
+    p.teleport(225, 172, Math.PI);
+    p.camYaw = Math.PI;
+    p.camPitch = 0.1;
+    const w = G.combat.weapon;
+    w.drawn = true;
+    w.reserve = 96;
+    p.mesh.userData.parts.gun.visible = true;
+    G.shotTick = (i) => {
+      if (i === 25) {
+        p.teleport(225, 194, Math.PI);
+        p.camYaw = Math.PI;
+      }
+    };
+  }
+
+  function stage(name) {
+    if (name === 'cover') stageCover();
+    else if (name === 'onfoot') stageOnfoot();
+    else if (name === 'chase') stageChase();
+    else if (name === 'mission') stageMission();
+  }
+
+  return { stage };
 }

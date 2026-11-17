@@ -1,426 +1,408 @@
-// missions.js — Dario's six jobs: the story of TIDEWATER.
-//
-// A small stage runner. Each mission is a list of stages (drive somewhere,
-// steal a specific car, collect the bags, lose the heat, clear the yard…)
-// with intro dialogue, an objective line for the HUD, an optional countdown
-// and a cash reward. Between missions Mari free-roams; a gold beacon at
-// Dario's garage starts the next job. Timers that run dry, arrests and
-// hospital trips fail the active job — it can always be retried.
+// missions.js — Dario Fuentes' six jobs for Mari: a data-driven stage engine
+// (go-to, steal, collect, checkpoints, fight, hold-to-rob, lose-the-cops)
+// with markers, timers, dialogue and cash rewards, plus free-roam pickups.
 
-import {
-  LANDMARKS, STORY_MARKER, SPORTS_CAR_SPOT, BOAT_SPOT, CRIMES,
-} from './config.js';
-import { makeBeacon } from './city.js';
+import { LANDMARKS, SPORTS_SPOT, CASH_BAGS, CHECKPOINTS } from './config.js';
 import { createCar } from './vehicles.js';
-import { spawnEnemy, clearEnemies } from './combat.js';
-import { setWanted, addHeat } from './police.js';
 
-const M = LANDMARKS;
-
-// The six jobs. Stage fields: kind, x/z, timer, say (dialogue on stage
-// start), text (objective; a function of stage scratch where it counts).
-export const MISSIONS = [
-  {
-    title: 'First Run', reward: 300,
-    intro: [
-      ['Dario Fuentes', 'Mari. Simple job: this package goes to the marina. Fast, clean, no questions.'],
-      ['Mari Vega', 'Fast and clean is the only way I drive, Dario.'],
-    ],
-    stages: [
-      { kind: 'goto', x: 318, z: 252, needCar: true, timer: 105,
-        text: 'Drive the package to the marina' },
-    ],
-    outro: [['Dario Fuentes', 'Package received. You drive like you mean it. I have more work.']],
-  },
-  {
-    title: 'Hot Wheels', reward: 450,
-    intro: [
-      ['Dario Fuentes', 'Mari — the yellow sports car by the Serena Hotel. Bring it home.'],
-      ['Mari Vega', 'Stealing from tourists now? Classy.'],
-    ],
-    stages: [
-      { kind: 'steal', text: 'Steal the yellow sports car at the Serena Hotel' },
-      { kind: 'goto', x: M.garage.x, z: 188, carRef: 'sports',
-        text: "Deliver the sports car to Dario's garage",
-        say: [['Mari Vega', 'One star. Shake it or park it — garage first.']] },
-    ],
-    outro: [['Dario Fuentes', 'Beautiful. The buyer pays tonight; you eat tonight.']],
-  },
-  {
-    title: 'Night Deposit', reward: 650,
-    intro: [
-      ['Dario Fuentes', 'Three cash bags walked off a boat at the docks. Bring them back.'],
-      ['Dario Fuentes', 'And Mari — the PSPD watch the docks. Two stars if they spot you.'],
-    ],
-    stages: [
-      { kind: 'collect', text: 'Collect the cash bags at the docks' },
-      { kind: 'escape', text: 'Lose the police',
-        say: [['Mari Vega', 'Heat is on. Break their line of sight.']] },
-      { kind: 'goto', x: M.safehouse.x, z: 104, text: 'Reach your safehouse' },
-    ],
-    outro: [['Dario Fuentes', 'All three bags. Ruth Calloway is asking questions, but not about you. Yet.']],
-  },
-  {
-    title: 'Harbor Lights', reward: 550,
-    intro: [
-      ['Dario Fuentes', 'A courier route, timed. Six lights around the harbor. Beat the clock.'],
-      ['Mari Vega', 'And the one star of police attention?'],
-      ['Dario Fuentes', 'Consider it ambience.'],
-    ],
-    stages: [
-      { kind: 'checkpoints', timer: 160, text: 'Hit every checkpoint before the clock runs out' },
-    ],
-    outro: [['Dario Fuentes', 'Route proven. The harbor boys are impressed.']],
-  },
-  {
-    title: 'Cold Trail', reward: 800,
-    intro: [
-      ['Dario Fuentes', 'A rival crew is holding my briefcase at the warehouse. Go on foot. Go ready.'],
-      ['Mari Vega', 'Q draws your pistol, Dario. I know.'],
-    ],
-    stages: [
-      { kind: 'goto', x: M.warehouse.x, z: 246, onFoot: true, text: 'Go to the Pier 9 warehouse on foot' },
-      { kind: 'fight', text: 'Clear the rival crew at the warehouse',
-        say: [['Rival Crew', 'Wrong warehouse, courier!']] },
-      { kind: 'pickup', text: 'Grab the briefcase' },
-      { kind: 'goto', x: M.garage.x, z: 188, text: "Escape to Dario's garage" },
-    ],
-    outro: [['Dario Fuentes', 'My briefcase, and a message sent. One last job after this, Mari. The big one.']],
-  },
-  {
-    title: 'Last Tide', reward: 1500,
-    intro: [
-      ['Dario Fuentes', 'The casino van, Mari. Take it, survive Calloway, and reach the boat at the marina.'],
-      ['Detective Calloway', 'PSPD! Vega, we know the car, the face, the boat. Give it up.'],
-      ['Mari Vega', 'Then come and take it, Detective.'],
-    ],
-    stages: [
-      { kind: 'goto', x: M.casino.x, z: -182, text: 'Go to the casino cash van' },
-      { kind: 'robvan', text: 'Rob the armoured van',
-        say: [['Mari Vega', 'Four stars. Now we find out how fast an armoured van goes.']] },
-      { kind: 'goto', x: BOAT_SPOT.x, z: BOAT_SPOT.z, carRef: 'van', timer: 150,
-        text: 'Reach the boat at the marina' },
-    ],
-    outro: [['Mari Vega', 'Tide is out, Dario. So am I. Port Serena is mine now.']],
-  },
-];
-
-const CHECKPOINTS = [
-  { x: 0, z: -168 }, { x: 168, z: -252 }, { x: 252, z: 0 },
-  { x: 84, z: 168 }, { x: -84, z: 252 }, { x: -252, z: 84 },
-];
-const CASH_BAGS = [
-  { x: 252, z: 196 }, { x: 196, z: 252 }, { x: 300, z: 150 },
-];
-
-export function initMissions(G) {
-  G.mission = { active: false, idx: 0, stage: 0, timer: null, scratch: {}, failed: false };
-  G.progress = { next: 0, done: false };
-  G.beacon = makeBeacon(G, 0xffd166);
-  G.smallBeacons = [makeBeacon(G, 0x7be495), makeBeacon(G, 0x7be495), makeBeacon(G, 0x7be495)];
-  G.pickups = [];
-
-  // The yellow sports car waits by the hotel from the very start.
-  G.sportsCar = createCar(G, 'sports', 0xf7c948, SPORTS_CAR_SPOT.x, SPORTS_CAR_SPOT.z, SPORTS_CAR_SPOT.heading, 'parked');
-  G.sportsCar.ai = { parked: true };
-
-  // Free-roam cash: a little money for explorers, respawning slowly.
-  const spots = [
-    [-84, -60], [120, 84], [-190, -84], [84, -190], [230, 60],
-    [-40, 250], [150, -120], [-250, 200],
-  ];
-  for (const [x, z] of spots) G.pickups.push(makePickup(G, x, z, 'cash'));
-  G.objectiveText = '';
-  G.objectiveTimer = null;
-}
-
-function makePickup(G, x, z, kind) {
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.85, 0.55, 0.85),
-    new THREE.MeshLambertMaterial({ color: kind === 'cash' ? 0x3fae5a : 0x8a5a2e, emissive: 0x1d5c2e })
+function beacon(color) {
+  const grp = new THREE.Group();
+  const cyl = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.7, 1.7, 34, 18, 1, true),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false,
+    })
   );
-  mesh.position.set(x, 0.75, z);
-  mesh.castShadow = true;
-  G.scene.add(mesh);
-  return { mesh, x, z, kind, taken: false, respawnAt: 0, spin: G.rng.range(0, 6) };
+  cyl.position.y = 17;
+  grp.add(cyl);
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(1.9, 0.14, 8, 24),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.25;
+  grp.add(ring);
+  grp.userData.ring = ring;
+  grp.visible = false;
+  return grp;
 }
 
-function stageDef(G) {
-  return MISSIONS[G.mission.idx].stages[G.mission.stage];
-}
+export function createMissions(G) {
+  const startMarker = beacon(0x39d0ff);
+  const objMarker = beacon(0xffc93d);
+  G.scene.add(startMarker);
+  G.scene.add(objMarker);
+  startMarker.position.set(LANDMARKS.garage.x, 0, LANDMARKS.garage.z);
 
-function setBeacon(G, x, z, show = true) {
-  G.beacon.position.set(x, 0, z);
-  G.beacon.visible = show;
-}
-function hideSmallBeacons(G) {
-  for (const b of G.smallBeacons) b.visible = false;
-}
+  const api = {
+    nextIndex: 0,
+    active: null,
+    objective: null,
+    update,
+    startNext,
+    startMission,
+    onEnterCar,
+    onEnemyKilled() {},
+    failActive,
+  };
 
-export function startMission(G, idx) {
-  const m = G.mission;
-  m.active = true; m.idx = idx; m.stage = 0; m.failed = false;
-  m.scratch = {};
-  const def = MISSIONS[idx];
-  if (G.showDialogue) G.showDialogue(def.intro);
-  if (G.notify) G.notify(`MISSION: ${def.title}`);
-  if (idx === 3) setWanted(G, 1);                       // Harbor Lights runs hot
-  if (idx === 4) { G.combat.reserve += 48; }            // Dario tops up her ammo
-  enterStage(G);
-}
+  // ---- free-roam cash pickups -------------------------------------------
+  const pickupSpots = [
+    [-88, -100], [12, -178], [178, 12], [-178, 88], [88, 178], [-12, 88],
+    [240, -60], [-240, 40], [60, -260], [-120, 240], [200, 232], [-60, -60],
+    [150, -150], [-190, -240],
+  ];
+  const pickups = pickupSpots.map(([x, z]) => {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.35, 0.45),
+      new THREE.MeshLambertMaterial({ color: 0x53b06a, emissive: 0x1d5c2e })
+    );
+    m.position.set(x, 0.6, z);
+    G.scene.add(m);
+    return { mesh: m, x, z, taken: 0 };
+  });
 
-function enterStage(G) {
-  const m = G.mission;
-  const st = stageDef(G);
-  m.scratch = {};
-  m.timer = st.timer || null;
-  if (st.say && G.showDialogue) G.showDialogue(st.say);
-  hideSmallBeacons(G);
-
-  if (st.kind === 'collect') {
-    m.scratch.bags = CASH_BAGS.map((b, i) => {
-      const pk = makePickup(G, b.x, b.z, 'cash');
-      pk.missionBag = true;
-      G.smallBeacons[i].position.set(b.x, 0, b.z);
-      G.smallBeacons[i].visible = true;
-      return pk;
-    });
-    m.scratch.got = 0;
-    setBeacon(G, 0, 0, false);
-  } else if (st.kind === 'checkpoints') {
-    m.scratch.next = 0;
-    const cp = CHECKPOINTS[0];
-    setBeacon(G, cp.x, cp.z);
-  } else if (st.kind === 'fight') {
-    const W = M.warehouse;
-    spawnEnemy(G, W.x - 14, W.z + 30);
-    spawnEnemy(G, W.x + 12, W.z + 33);
-    spawnEnemy(G, W.x - 4, W.z + 40);
-    spawnEnemy(G, W.x + 20, W.z + 26);
-    m.scratch.left = 4;
-    setBeacon(G, 0, 0, false);
-  } else if (st.kind === 'pickup') {
-    const pk = makePickup(G, M.warehouse.x, M.warehouse.z + 30, 'case');
-    pk.missionBag = true;
-    m.scratch.case = pk;
-    setBeacon(G, pk.x, pk.z);
-  } else if (st.kind === 'robvan') {
-    // The van and its guards have been waiting since the goto stage.
-    setBeacon(G, G.vanCar.x, G.vanCar.z);
-  } else if (st.kind === 'steal') {
-    setBeacon(G, G.sportsCar.x, G.sportsCar.z);
-  } else if (st.kind === 'escape') {
-    setBeacon(G, 0, 0, false);
-  } else { // goto
-    setBeacon(G, st.x, st.z);
+  // ---- mission definitions ------------------------------------------------
+  function defs() {
+    const L = LANDMARKS;
+    return [
+      {
+        name: 'First Run',
+        reward: 300,
+        intro: [
+          ['DARIO FUENTES', 'Mari. A package, the marina, no questions. The clock is the only cop you cannot outrun.'],
+          ['MARI VEGA', 'Fast and clean is the only way I drive, Dario.'],
+        ],
+        setup() {
+          const car = createCar(G, 'sedan', 0xf2f0eb, 124, 94, Math.PI / 2);
+          car.missionTag = 'm1-car';
+        },
+        stages: [
+          { type: 'goto', x: L.marina.x, z: L.marina.z, r: 8, needCar: true, timer: 130, text: 'Drive the package to the marina' },
+        ],
+      },
+      {
+        name: 'Hot Wheels',
+        reward: 450,
+        intro: [
+          ['DARIO FUENTES', 'Mari — the yellow sports car by the Serena Hotel. Bring it home.'],
+          ['MARI VEGA', 'Stealing from tourists now? …Fine. But I keep the sunglasses.'],
+        ],
+        setup() {
+          const car = createCar(G, 'sports', 0xf2d21d, SPORTS_SPOT.x, SPORTS_SPOT.z, SPORTS_SPOT.heading);
+          car.missionTag = 'steal-target';
+        },
+        stages: [
+          { type: 'goto', x: SPORTS_SPOT.x, z: SPORTS_SPOT.z, r: 11, text: 'Go to the yellow sports car at the Serena Hotel' },
+          { type: 'steal', tag: 'steal-target', x: SPORTS_SPOT.x, z: SPORTS_SPOT.z, text: 'Steal the yellow sports car' },
+          { type: 'goto', x: L.garage.x, z: L.garage.z, r: 8, needCar: true, text: "Deliver the car to Dario's garage" },
+        ],
+      },
+      {
+        name: 'Night Deposit',
+        reward: 600,
+        intro: [
+          ['DARIO FUENTES', 'Three cash bags walked off a boat tonight. They are scattered around the docks. Collect them.'],
+          ['DARIO FUENTES', 'When you have all three, the PSPD will care. Lose them, then go home.'],
+        ],
+        stages: [
+          { type: 'collect', points: CASH_BAGS, text: 'Collect the cash bags at the docks' },
+          {
+            type: 'loseCops', x: L.safehouse.x, z: L.safehouse.z, r: 7,
+            text: 'Lose the police, then reach your safehouse',
+            onStart() {
+              G.police.setStars(2);
+              G.hud.showDialogue('DET. CALLOWAY', 'All units — courier suspect fleeing the docks. Bring her in.', 3.5);
+            },
+          },
+        ],
+      },
+      {
+        name: 'Harbor Lights',
+        reward: 500,
+        intro: [
+          ['DARIO FUENTES', 'A little tour, Mari. Six lights across my city, against the clock. Try not to scratch the paint.'],
+        ],
+        setup() { G.police.addHeat(100); },
+        stages: [
+          { type: 'checkpoints', points: CHECKPOINTS, timer: 60, perPoint: 15, text: 'Hit the checkpoints across the city' },
+        ],
+      },
+      {
+        name: 'Cold Trail',
+        reward: 800,
+        intro: [
+          ['DARIO FUENTES', 'A rival crew is holding my briefcase at the warehouse. Go on foot. Go ready.'],
+          ['MARI VEGA', 'Four of them, one of me. You owe me hazard pay, Dario.'],
+        ],
+        stages: [
+          { type: 'goto', x: 225, z: 172, r: 9, text: 'Go to the Pier 9 warehouse' },
+          {
+            type: 'fight', x: 228, z: 162, text: 'Clear the rival crew at the warehouse',
+            onStart() {
+              const spots = [[206, 158], [220, 166], [240, 157], [249, 167]];
+              for (const [x, z] of spots) G.combat.spawnEnemy(x, z, { tag: 'crew' });
+              G.hud.showDialogue('RIVAL CREW', 'Wrong warehouse, courier!', 2.5);
+            },
+          },
+          { type: 'pickup', x: 232, z: 161, r: 2.6, text: 'Take the briefcase' },
+          { type: 'goto', x: L.garage.x, z: L.garage.z, r: 8, needCar: true, text: "Escape to Dario's garage" },
+        ],
+      },
+      {
+        name: 'Last Tide',
+        reward: 1500,
+        intro: [
+          ['DARIO FUENTES', 'Last job, Mari. The casino van, then the boat at the marina. After this, we are both ghosts.'],
+          ['DET. CALLOWAY', 'Vega. Whatever he promised you — it is not worth the tide coming in.'],
+        ],
+        setup() {
+          const van = createCar(G, 'van', 0x8f9aa4, 206, 4, Math.PI / 2);
+          van.missionTag = 'cash-van';
+        },
+        stages: [
+          { type: 'goto', x: LANDMARKS.casino.x, z: LANDMARKS.casino.z, r: 11, text: 'Go to the armoured van at Casino Serena' },
+          {
+            type: 'rob', tag: 'cash-van', r: 5.5, hold: 3, text: 'Rob the armoured van',
+            onDone() {
+              G.police.setStars(4);
+              G.hud.showDialogue('DET. CALLOWAY', 'All units, all units — casino van hit. Do not let her reach the water.', 3.5);
+            },
+          },
+          { type: 'goto', x: LANDMARKS.pier.x, z: LANDMARKS.pier.z, r: 7, text: 'Reach the boat at the marina pier', final: true },
+        ],
+      },
+    ];
   }
 
-  // Mission 6's van + guards appear as soon as she heads for the casino.
-  if (MISSIONS[m.idx].title === 'Last Tide' && m.stage === 0 && !G.vanCar) {
-    G.vanCar = createCar(G, 'armoured', 0x8a8f96, M.casino.x + 16, M.casino.z + 14, Math.PI, 'parked');
-    G.vanCar.ai = { parked: true };
-    spawnEnemy(G, M.casino.x + 10, M.casino.z + 20);
-    spawnEnemy(G, M.casino.x + 22, M.casino.z + 8);
+  // ---- stage runtime --------------------------------------------------------
+
+  function startMission(i) {
+    if (api.active || i < 0 || i >= 6) return false;
+    const def = defs()[i];
+    api.active = {
+      def, index: i, stageIdx: -1, stage: null,
+      timer: null, collected: 0, cpIndex: 0, holdT: 0, items: [],
+    };
+    if (def.setup) def.setup();
+    for (const [name, text] of def.intro) G.hud.showDialogue(name, text, 3.6);
+    G.hud.banner('MISSION: ' + def.name);
+    nextStage();
+    return true;
   }
-  updateObjective(G);
-}
 
-function updateObjective(G) {
-  const m = G.mission;
-  if (!m.active) {
-    G.objectiveText = G.progress.done
-      ? 'Free roam — Port Serena is yours'
-      : `Next job: "${MISSIONS[G.progress.next].title}" — meet Dario's contact at the marker`;
-    G.objectiveTimer = null;
-    return;
+  function startNext() {
+    return startMission(api.nextIndex);
   }
-  const st = stageDef(G);
-  let text = st.text;
-  if (st.kind === 'collect') text = `Collect the cash bags at the docks (${m.scratch.got}/3)`;
-  if (st.kind === 'checkpoints') text = `Checkpoint ${Math.min(m.scratch.next + 1, 6)}/6 — beat the clock`;
-  if (st.kind === 'fight') text = `Clear the rival crew at the warehouse (${4 - (m.scratch.left || 0)}/4)`;
-  const dist = currentTargetDist(G);
-  G.objectiveText = dist !== null ? `${text} — ${Math.round(dist)}m` : text;
-  G.objectiveTimer = m.timer;
-}
 
-function currentTargetDist(G) {
-  const m = G.mission;
-  if (!m.active) return Math.hypot(G.playerPos.x - STORY_MARKER.x, G.playerPos.z - STORY_MARKER.z);
-  const st = stageDef(G);
-  const p = G.playerPos;
-  if (st.kind === 'goto') return Math.hypot(p.x - st.x, p.z - st.z);
-  if (st.kind === 'steal') return Math.hypot(p.x - G.sportsCar.x, p.z - G.sportsCar.z);
-  if (st.kind === 'checkpoints') {
-    const cp = CHECKPOINTS[Math.min(m.scratch.next, 5)];
-    return Math.hypot(p.x - cp.x, p.z - cp.z);
-  }
-  if (st.kind === 'robvan' && G.vanCar) return Math.hypot(p.x - G.vanCar.x, p.z - G.vanCar.z);
-  return null;
-}
-
-function completeStage(G) {
-  const m = G.mission;
-  m.stage++;
-  if (m.stage >= MISSIONS[m.idx].stages.length) completeMission(G);
-  else enterStage(G);
-}
-
-function completeMission(G) {
-  const m = G.mission;
-  const def = MISSIONS[m.idx];
-  m.active = false;
-  setBeacon(G, 0, 0, false);
-  hideSmallBeacons(G);
-  clearEnemies(G);
-  G.money += def.reward;
-  G.progress.next = m.idx + 1;
-  if (m.idx === MISSIONS.length - 1) G.progress.done = true;
-  if (def.outro && G.showDialogue) G.showDialogue(def.outro);
-  if (G.audio) G.audio.sting();
-  if (G.onMissionComplete) G.onMissionComplete(def);
-  if (G.saveGame) G.saveGame();
-  updateObjective(G);
-}
-
-// Jump straight into a mission stage (used by the staged screenshot
-// scenes, and handy for debugging). Assumes the mission is active.
-export function forceStage(G, idx, stage) {
-  const m = G.mission;
-  m.active = true; m.idx = idx; m.stage = stage; m.failed = false;
-  enterStage(G);
-}
-
-export function failMission(G, why) {
-  const m = G.mission;
-  if (!m.active) return;
-  m.active = false;
-  setBeacon(G, 0, 0, false);
-  hideSmallBeacons(G);
-  clearEnemies(G);
-  if (G.notify) G.notify(`Mission failed — ${why}. Dario's marker is waiting.`);
-  updateObjective(G);
-}
-
-// Called by combat when a rival goes down.
-export function onEnemyDown(G) {
-  const m = G.mission;
-  if (m.active && stageDef(G).kind === 'fight') {
-    m.scratch.left = Math.max(0, (m.scratch.left || 4) - 1);
-    updateObjective(G);
-    if (m.scratch.left <= 0) completeStage(G);
-  }
-}
-
-export function updateMissions(G, dt) {
-  // Idle pickups spin; free-roam cash respawns.
-  for (const pk of G.pickups) {
-    if (pk.taken) {
-      if (G.time > pk.respawnAt) { pk.taken = false; pk.mesh.visible = true; }
-      continue;
+  function nextStage() {
+    const a = api.active;
+    if (!a) return;
+    // clean up previous stage props
+    for (const m of a.items) G.scene.remove(m);
+    a.items = [];
+    a.stageIdx++;
+    if (a.stageIdx >= a.def.stages.length) {
+      completeMission();
+      return;
     }
-    pk.mesh.rotation.y += dt * 1.8;
-    pk.mesh.position.y = 0.75 + Math.sin(G.time * 2.4 + pk.spin) * 0.12;
-    if (Math.hypot(G.playerPos.x - pk.x, G.playerPos.z - pk.z) < 2.9) {
-      pk.taken = true; pk.mesh.visible = false; pk.respawnAt = G.time + 75;
-      G.money += 40;
-      if (G.audio) G.audio.pickup();
-      if (G.notify) G.notify('Found cash +$40');
-      if (G.saveGame) G.saveGame();
-    }
-  }
-
-  const m = G.mission;
-  if (!m.active) {
-    // Free roam: the gold beacon marks Dario's contact.
-    if (!G.progress.done) {
-      setBeacon(G, STORY_MARKER.x, STORY_MARKER.z);
-      if (Math.hypot(G.playerPos.x - STORY_MARKER.x, G.playerPos.z - STORY_MARKER.z) < 4.2) {
-        startMission(G, G.progress.next);
-      }
-    } else setBeacon(G, 0, 0, false);
-    updateObjective(G);
-    return;
-  }
-
-  // Mission pickups (bags / briefcase).
-  const st = stageDef(G);
-  const p = G.playerPos;
-  if (st.kind === 'collect') {
-    for (const bag of m.scratch.bags) {
-      if (bag.taken) continue;
-      bag.mesh.rotation.y += dt * 1.8;
-      if (Math.hypot(p.x - bag.x, p.z - bag.z) < 3) {
-        bag.taken = true; bag.mesh.visible = false;
-        m.scratch.got++;
-        if (G.audio) G.audio.pickup();
-        if (G.notify) G.notify(`Cash bag ${m.scratch.got}/3`);
-        const i = m.scratch.bags.indexOf(bag);
-        if (G.smallBeacons[i]) G.smallBeacons[i].visible = false;
-        if (m.scratch.got === 2) setWanted(G, 2);   // spotted at the docks
-        updateObjective(G);
-        if (m.scratch.got >= 3) completeStage(G);
+    const s = a.def.stages[a.stageIdx];
+    a.stage = s;
+    a.timer = s.timer || null;
+    a.collected = 0;
+    a.cpIndex = 0;
+    a.holdT = 0;
+    if (s.type === 'collect') {
+      for (const pt of s.points) {
+        const m = new THREE.Mesh(
+          new THREE.BoxGeometry(0.8, 0.5, 0.55),
+          new THREE.MeshLambertMaterial({ color: 0x53b06a, emissive: 0x2a7a3d })
+        );
+        m.position.set(pt.x, 0.7, pt.z);
+        G.scene.add(m);
+        a.items.push(m);
       }
     }
-    return;
-  }
-  if (st.kind === 'pickup') {
-    const pk = m.scratch.case;
-    if (pk && !pk.taken) {
-      pk.mesh.rotation.y += dt * 1.8;
-      if (Math.hypot(p.x - pk.x, p.z - pk.z) < 3) {
-        pk.taken = true; pk.mesh.visible = false;
-        if (G.audio) G.audio.pickup();
-        completeStage(G);
-      }
+    if (s.type === 'pickup') {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(0.65, 0.25, 0.45),
+        new THREE.MeshLambertMaterial({ color: 0x8a5a2b, emissive: 0x3a2408 })
+      );
+      m.position.set(s.x, 0.6, s.z);
+      G.scene.add(m);
+      a.items.push(m);
     }
-    return;
+    if (s.onStart) s.onStart();
+    refreshObjective();
   }
 
-  // Countdowns.
-  if (m.timer !== null && m.timer !== undefined) {
-    m.timer -= dt;
-    if (m.timer <= 0) { failMission(G, 'out of time'); return; }
+  function refreshObjective() {
+    const a = api.active;
+    if (!a || !a.stage) { api.objective = null; return; }
+    const s = a.stage;
+    let target = null;
+    if (s.type === 'collect') target = s.points[a.collected];
+    else if (s.type === 'checkpoints') target = s.points[a.cpIndex];
+    else if (s.type === 'rob') {
+      const van = G.cars.find((c) => c.missionTag === s.tag);
+      if (van) target = van;
+    } else if (s.x !== undefined) target = s;
+    let text = s.text;
+    if (s.type === 'collect') text += ` (${a.collected}/${s.points.length})`;
+    if (s.type === 'checkpoints') text += ` (${a.cpIndex}/${s.points.length})`;
+    if (s.type === 'fight') text += ` (${(a.def.stages[a.stageIdx].total || 4) - G.combat.aliveCount()}/4)`;
+    api.objective = {
+      text,
+      x: target ? target.x : null,
+      z: target ? target.z : null,
+      timer: a.timer,
+    };
+    if (target) objMarker.position.set(target.x, 0, target.z);
+    objMarker.visible = !!target;
   }
 
-  const dist = currentTargetDist(G);
-  switch (st.kind) {
-    case 'goto': {
-      const inCarOk = !st.needCar || !!G.player.inCar;
-      const carOk = !st.carRef || G.player.inCar === (st.carRef === 'sports' ? G.sportsCar : G.vanCar);
-      const footOk = !st.onFoot || !G.player.inCar;
-      if (dist !== null && dist < 7 && inCarOk && carOk && footOk) completeStage(G);
-      break;
+  function completeMission() {
+    const a = api.active;
+    const def = a.def;
+    api.active = null;
+    api.objective = null;
+    objMarker.visible = false;
+    G.state.money += def.reward;
+    api.nextIndex = a.index + 1;
+    G.audio.sting();
+    G.saveGame();
+    if (def.stages.some((s) => s.final)) {
+      G.showEnding(def);
+    } else {
+      G.showComplete(def);
     }
-    case 'steal':
-      if (G.player.inCar === G.sportsCar) {
-        setWanted(G, 1);
-        completeStage(G);
-      } else setBeacon(G, G.sportsCar.x, G.sportsCar.z);
-      break;
-    case 'escape':
-      if (G.wanted.stars === 0) completeStage(G);
-      break;
-    case 'checkpoints': {
-      if (G.player.inCar && dist !== null && dist < 8) {
-        m.scratch.next++;
-        if (G.audio) G.audio.pickup();
-        if (m.scratch.next >= CHECKPOINTS.length) { completeStage(G); break; }
-        const cp = CHECKPOINTS[m.scratch.next];
-        setBeacon(G, cp.x, cp.z);
-        updateObjective(G);
-      }
-      break;
-    }
-    case 'robvan':
-      if (!G.player.inCar && dist !== null && dist < 4.6) {
-        setWanted(G, 4);
-        addHeat(G, 0); // refresh the sighting clock
-        completeStage(G);
-      }
-      break;
-    default:
-      break; // 'fight' advances from onEnemyDown
   }
-  updateObjective(G);
+
+  function failActive(reason) {
+    if (!api.active) return;
+    for (const m of api.active.items) G.scene.remove(m);
+    api.active = null;
+    api.objective = null;
+    objMarker.visible = false;
+    G.combat.clearEnemies();
+    G.hud.toast(reason || 'Mission failed — return to the blue marker to retry.');
+  }
+
+  function onEnterCar(car) {
+    const a = api.active;
+    if (!a || !a.stage) return;
+    if (a.stage.type === 'steal' && car.missionTag === a.stage.tag) {
+      G.hud.showDialogue('MARI VEGA', 'Got it. Now — home, before Calloway wakes up.', 3);
+      nextStage();
+    }
+  }
+
+  function distTo(x, z) {
+    return Math.hypot(G.player.x - x, G.player.z - z);
+  }
+
+  function update(dt) {
+    // marker animations
+    const t = G.state.time;
+    for (const mk of [startMarker, objMarker]) {
+      if (mk.visible) mk.userData.ring.rotation.z = t * 1.5;
+    }
+    startMarker.visible = !api.active && api.nextIndex < 6 && G.state.screen === 'playing';
+    // free-roam pickups
+    for (const pk of pickups) {
+      if (pk.taken > 0) { pk.taken -= dt; pk.mesh.visible = pk.taken <= 0; continue; }
+      pk.mesh.rotation.y = t * 2;
+      pk.mesh.position.y = 0.6 + Math.sin(t * 3 + pk.x) * 0.12;
+      if (distTo(pk.x, pk.z) < 2) {
+        pk.taken = 90;
+        G.state.money += 25;
+        G.audio.pickup();
+        G.hud.toast('+$25 — finders keepers');
+      }
+    }
+    // mission start trigger
+    if (!api.active && api.nextIndex < 6 && G.state.screen === 'playing') {
+      if (distTo(LANDMARKS.garage.x, LANDMARKS.garage.z) < 3.6) startNext();
+    }
+    const a = api.active;
+    if (!a || G.state.screen !== 'playing') return;
+    const s = a.stage;
+    if (!s) return;
+    // timers
+    if (a.timer !== null && s.type !== 'checkpoints') {
+      a.timer -= dt;
+      if (a.timer <= 0) { failActive('Out of time.'); return; }
+    }
+    refreshObjective();
+    const p = G.player;
+    switch (s.type) {
+      case 'goto': {
+        if (distTo(s.x, s.z) < s.r && (!s.needCar || p.car)) nextStage();
+        break;
+      }
+      case 'steal': {
+        objMarker.position.set(s.x, 0, s.z);
+        break;
+      }
+      case 'collect': {
+        const pt = s.points[a.collected];
+        if (pt && distTo(pt.x, pt.z) < 2.4) {
+          const m = a.items[a.collected];
+          if (m) m.visible = false;
+          a.collected++;
+          G.audio.pickup();
+          G.state.money += 40;
+          if (a.collected >= s.points.length) nextStage();
+        }
+        break;
+      }
+      case 'checkpoints': {
+        a.timer -= dt;
+        if (a.timer <= 0) { failActive('Out of time.'); return; }
+        const pt = s.points[a.cpIndex];
+        if (pt && p.car && distTo(pt.x, pt.z) < 9) {
+          a.cpIndex++;
+          a.timer += s.perPoint;
+          G.audio.pickup();
+          if (a.cpIndex >= s.points.length) nextStage();
+        }
+        break;
+      }
+      case 'fight': {
+        if (G.combat.aliveCount() === 0) nextStage();
+        break;
+      }
+      case 'pickup': {
+        if (distTo(s.x, s.z) < s.r && !p.car) nextStage();
+        break;
+      }
+      case 'rob': {
+        const van = G.cars.find((c) => c.missionTag === s.tag);
+        if (van && distTo(van.x, van.z) < s.r && !p.car) {
+          a.holdT += dt;
+          api.objective.text = `Robbing the van… ${Math.ceil(s.hold - a.holdT)}s`;
+          if (a.holdT >= s.hold) {
+            if (s.onDone) s.onDone();
+            nextStage();
+          }
+        } else {
+          a.holdT = Math.max(0, a.holdT - dt * 2);
+        }
+        break;
+      }
+      case 'loseCops': {
+        api.objective.text = G.police.stars > 0
+          ? 'Lose the police!'
+          : 'Reach your safehouse';
+        api.objective.x = G.police.stars > 0 ? null : s.x;
+        api.objective.z = G.police.stars > 0 ? null : s.z;
+        objMarker.visible = G.police.stars === 0;
+        if (G.police.stars === 0) objMarker.position.set(s.x, 0, s.z);
+        if (G.police.stars === 0 && distTo(s.x, s.z) < s.r) nextStage();
+        break;
+      }
+    }
+  }
+
+  return api;
 }
